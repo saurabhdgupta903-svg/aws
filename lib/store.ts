@@ -1,0 +1,147 @@
+import { haversineMeters } from "./geo";
+import type { RiskLevel } from "./risk";
+
+export interface FloodReport {
+  id: string;
+  lat: number;
+  lng: number;
+  thumbnail: string; // ~150px, <= 20KB JPEG data URL
+  waterPresent: boolean;
+  severity: RiskLevel;
+  reason: string;
+  verified: boolean;
+  demoMode?: boolean;
+  createdAt: string;
+}
+
+const OFFLINE_CACHE_KEY = "floodloop_reports_cache_v2";
+const VERIFICATION_RADIUS_M = 300;
+const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000;
+
+export function recomputeVerifications(reports: FloodReport[]): FloodReport[] {
+  const cutoff = Date.now() - TWENTY_FOUR_HOURS_MS;
+  const active = reports.filter(
+    (r) => new Date(r.createdAt).getTime() >= cutoff
+  );
+
+  return active.map((report) => {
+    if (report.waterPresent) {
+      return { ...report, verified: true };
+    }
+    const nearbyCount = active.filter(
+      (other) =>
+        haversineMeters(
+          { lat: report.lat, lng: report.lng },
+          { lat: other.lat, lng: other.lng }
+        ) <= VERIFICATION_RADIUS_M
+    ).length;
+    return { ...report, verified: nearbyCount >= 2 };
+  });
+}
+
+export function loadOfflineReports(): FloodReport[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(OFFLINE_CACHE_KEY);
+    if (!raw) return [];
+    return recomputeVerifications(JSON.parse(raw) as FloodReport[]);
+  } catch {
+    return [];
+  }
+}
+
+export function saveOfflineReports(reports: FloodReport[]): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(
+      OFFLINE_CACHE_KEY,
+      JSON.stringify(reports.slice(0, 200))
+    );
+  } catch {
+    // Ignore storage quota errors
+  }
+}
+
+export async function fetchSharedReports(): Promise<FloodReport[]> {
+  try {
+    const res = await fetch("/api/reports", { cache: "no-store" });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = (await res.json()) as { reports: FloodReport[] };
+    const verified = recomputeVerifications(data.reports ?? []);
+    saveOfflineReports(verified);
+    return verified;
+  } catch {
+    return loadOfflineReports();
+  }
+}
+
+export async function postSharedReport(
+  report: Omit<FloodReport, "id" | "createdAt" | "verified">
+): Promise<FloodReport[]> {
+  try {
+    const res = await fetch("/api/reports", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(report),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = (await res.json()) as { reports: FloodReport[] };
+    const verified = recomputeVerifications(data.reports ?? []);
+    saveOfflineReports(verified);
+    return verified;
+  } catch {
+    // Offline fallback: store locally
+    const local: FloodReport = {
+      ...report,
+      id: `local-${Date.now()}`,
+      verified: report.waterPresent,
+      createdAt: new Date().toISOString(),
+    };
+    const next = recomputeVerifications([local, ...loadOfflineReports()]);
+    saveOfflineReports(next);
+    return next;
+  }
+}
+
+/**
+ * Compress an uploaded/captured image to a ~150px thumbnail JPEG data URL
+ * strictly under ~20KB before sending to /api/reports or caching.
+ */
+export async function compressImageToThumbnail(
+  file: File,
+  maxSize = 150,
+  maxBytes = 20000
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("Failed to read image file"));
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error("Invalid image file"));
+      img.onload = () => {
+        const scale = Math.min(1, maxSize / Math.max(img.width, img.height));
+        const width = Math.max(1, Math.round(img.width * scale));
+        const height = Math.max(1, Math.round(img.height * scale));
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) {
+          resolve("");
+          return;
+        }
+        ctx.drawImage(img, 0, 0, width, height);
+
+        let quality = 0.7;
+        let dataUrl = canvas.toDataURL("image/jpeg", quality);
+        while (dataUrl.length > maxBytes && quality > 0.25) {
+          quality -= 0.15;
+          dataUrl = canvas.toDataURL("image/jpeg", quality);
+        }
+        resolve(dataUrl);
+      };
+      img.src = reader.result as string;
+    };
+    reader.readAsDataURL(file);
+  });
+}

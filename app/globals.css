@@ -1,0 +1,28 @@
+@import "tailwindcss";
+
+:root {
+  --background: #071022;
+  --foreground: #f1f5f9;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+}
+
+body {
+  background: #071022;
+  color: #f1f5f9;
+  font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    Roboto, sans-serif;
+}
+
+.leaflet-container {
+  background: #0b162c;
+  font-family: inherit;
+}
+
+.floodloop-div-icon {
+  background: transparent;
+  border: none;
+}
