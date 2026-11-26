@@ -1,6 +1,7 @@
 "use client";
 
-import { CloudRain, Droplets, Mountain, RefreshCw, Waves, Zap } from "lucide-react";
+import { useState } from "react";
+import { Bell, CloudRain, Droplets, RefreshCw, Waves, Zap } from "lucide-react";
 import {
   Bar,
   BarChart,
@@ -9,7 +10,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { hazardTypeLabel, hotspotDisplayName, riskLevelLabel, type Lang, type Translations } from "@/lib/i18n";
+import { hotspotDisplayName, riskLevelLabel, type Lang, type Translations } from "@/lib/i18n";
 import {
   RISK_COLORS,
   type HotspotRisk,
@@ -37,7 +38,6 @@ interface RiskPanelProps {
 
 function HazardIcon({ type }: { type: string }) {
   if (type === "river_flood") return <Waves className="w-3 h-3 text-sky-400" />;
-  if (type === "ghat_landslide") return <Mountain className="w-3 h-3 text-amber-400" />;
   return <Droplets className="w-3 h-3 text-cyan-400" />;
 }
 
@@ -56,6 +56,30 @@ export default function RiskPanel({
   t,
 }: RiskPanelProps) {
   const isSimulating = simulateRegion !== "off";
+  const [alertEmail, setAlertEmail] = useState("");
+  const [alertStatus, setAlertStatus] = useState<string | null>(null);
+  const [subscribing, setSubscribing] = useState(false);
+
+  const handleSubscribe = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!alertEmail.trim()) return;
+    setSubscribing(true);
+    setAlertStatus(null);
+    try {
+      const res = await fetch("/api/subscribe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: alertEmail.trim() }),
+      });
+      const data = (await res.json()) as { message?: string; error?: string };
+      setAlertStatus(data.message || data.error || "Subscribed.");
+      if (res.ok) setAlertEmail("");
+    } catch {
+      setAlertStatus("Failed to subscribe.");
+    } finally {
+      setSubscribing(false);
+    }
+  };
 
   // Show chart from first hotspot with weather data
   const firstHotspot = stateSummary.top5[0];
@@ -299,6 +323,37 @@ export default function RiskPanel({
           ))}
         </div>
       </div>
+
+      {/* SNS Email Alerts Form */}
+      <form
+        onSubmit={handleSubscribe}
+        className="rounded-2xl bg-slate-900/80 border border-cyan-500/25 p-4 space-y-2.5"
+      >
+        <div className="flex items-center gap-2">
+          <Bell className="w-4 h-4 text-cyan-400" />
+          <h3 className="text-xs font-semibold text-white">Get alerts (Amazon SNS)</h3>
+        </div>
+        <div className="flex items-center gap-2">
+          <input
+            type="email"
+            required
+            value={alertEmail}
+            onChange={(e) => setAlertEmail(e.target.value)}
+            placeholder="you@example.com"
+            className="flex-1 rounded-xl bg-slate-800/90 border border-slate-700 focus:border-cyan-400 focus:outline-none px-3 py-2 text-xs text-white placeholder:text-slate-500"
+          />
+          <button
+            type="submit"
+            disabled={subscribing}
+            className="px-3.5 py-2 rounded-xl bg-cyan-500 hover:bg-cyan-400 disabled:bg-slate-700 text-slate-950 font-bold text-xs shrink-0 transition-colors"
+          >
+            {subscribing ? "..." : "Subscribe"}
+          </button>
+        </div>
+        {alertStatus && (
+          <p className="text-[11px] text-cyan-200">{alertStatus}</p>
+        )}
+      </form>
     </div>
   );
 }

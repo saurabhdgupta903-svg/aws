@@ -5,7 +5,9 @@ export interface FloodReport {
   id: string;
   lat: number;
   lng: number;
-  thumbnail: string; // ~150px, <= 20KB JPEG data URL
+  photoKey?: string;
+  photoUrl?: string; // Presigned S3 GET URL
+  thumbnail?: string; // Fallback thumbnail for local/offline mode
   waterPresent: boolean;
   severity: RiskLevel;
   reason: string;
@@ -14,7 +16,7 @@ export interface FloodReport {
   createdAt: string;
 }
 
-const OFFLINE_CACHE_KEY = "floodloop_reports_cache_v2";
+const OFFLINE_CACHE_KEY = "floodloop_reports_cache_v3";
 const VERIFICATION_RADIUS_M = 300;
 const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000;
 
@@ -62,6 +64,38 @@ export function saveOfflineReports(reports: FloodReport[]): void {
   }
 }
 
+export async function uploadPhotoToS3(file: File): Promise<string | null> {
+  try {
+    const res = await fetch("/api/upload-url", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contentType: file.type || "image/jpeg",
+        fileSize: file.size,
+      }),
+    });
+    if (!res.ok) return null;
+    const data = (await res.json()) as {
+      uploadUrl: string | null;
+      photoKey: string | null;
+      mockUpload?: boolean;
+    };
+    if (data.mockUpload || !data.uploadUrl || !data.photoKey) {
+      return null;
+    }
+
+    const putRes = await fetch(data.uploadUrl, {
+      method: "PUT",
+      headers: { "Content-Type": file.type || "image/jpeg" },
+      body: file,
+    });
+    if (!putRes.ok) return null;
+    return data.photoKey;
+  } catch {
+    return null;
+  }
+}
+
 export async function fetchSharedReports(): Promise<FloodReport[]> {
   try {
     const res = await fetch("/api/reports", { cache: "no-store" });
@@ -90,7 +124,6 @@ export async function postSharedReport(
     saveOfflineReports(verified);
     return verified;
   } catch {
-    // Offline fallback: store locally
     const local: FloodReport = {
       ...report,
       id: `local-${Date.now()}`,
@@ -105,7 +138,7 @@ export async function postSharedReport(
 
 /**
  * Compress an uploaded/captured image to a ~150px thumbnail JPEG data URL
- * strictly under ~20KB before sending to /api/reports or caching.
+ * strictly under ~20KB for local/demo fallback.
  */
 export async function compressImageToThumbnail(
   file: File,

@@ -174,8 +174,6 @@ function formatHazardLabel(type: HazardZone["hazardType"]): string {
   switch (type) {
     case "river_flood":
       return "river flood";
-    case "ghat_landslide":
-      return "landslide risk";
     case "reported_flood":
       return "reported flood";
     default:

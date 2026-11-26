@@ -1,26 +1,30 @@
 import { NextRequest, NextResponse } from "next/server";
+import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
+import {
+  DynamoDBDocumentClient,
+  PutCommand,
+  ScanCommand,
+} from "@aws-sdk/lib-dynamodb";
+import { S3Client, GetObjectCommand } from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { recomputeVerifications, type FloodReport } from "@/lib/store";
 
-const REDIS_KEY = "floodloop:maharashtra:reports:v1";
 const MAX_REPORTS = 200;
-const TTL_MS = 24 * 60 * 60 * 1000;
+const TTL_SECONDS = 24 * 60 * 60; // 24 hours
+const TTL_MS = TTL_SECONDS * 1000;
 
 declare global {
   var __floodloopReports: FloodReport[] | undefined;
 }
 
-function getRedisConfig(): { url: string; token: string } | null {
-  const url =
-    process.env.KV_REST_API_URL?.trim() ||
-    process.env.UPSTASH_REDIS_REST_URL?.trim();
-  const token =
-    process.env.KV_REST_API_TOKEN?.trim() ||
-    process.env.UPSTASH_REDIS_REST_TOKEN?.trim();
-  if (url && token) return { url, token };
-  return null;
+function getAwsConfig() {
+  const table = process.env.DDB_TABLE?.trim();
+  const bucket = process.env.S3_BUCKET?.trim();
+  const region = process.env.AWS_REGION?.trim() || "ap-south-1";
+  return { table, bucket, region };
 }
 
-function pruneAndVerify(reports: FloodReport[]): FloodReport[] {
+function pruneMemory(reports: FloodReport[]): FloodReport[] {
   const cutoff = Date.now() - TTL_MS;
   const fresh = reports
     .filter((r) => new Date(r.createdAt).getTime() >= cutoff)
@@ -28,52 +32,63 @@ function pruneAndVerify(reports: FloodReport[]): FloodReport[] {
   return recomputeVerifications(fresh);
 }
 
-async function readReports(): Promise<FloodReport[]> {
-  const redis = getRedisConfig();
-  if (redis) {
-    try {
-      const res = await fetch(`${redis.url}/get/${REDIS_KEY}`, {
-        headers: { Authorization: `Bearer ${redis.token}` },
-        cache: "no-store",
-      });
-      if (res.ok) {
-        const json = (await res.json()) as { result?: string | null };
-        if (json.result) {
-          const parsed = JSON.parse(json.result) as FloodReport[];
-          return pruneAndVerify(parsed);
-        }
-        return [];
+async function attachPresignedUrls(
+  reports: FloodReport[],
+  bucket?: string,
+  region?: string
+): Promise<FloodReport[]> {
+  if (!bucket) return reports;
+  const s3 = new S3Client({ region: region || "ap-south-1" });
+  return Promise.all(
+    reports.map(async (rep) => {
+      if (!rep.photoKey) return rep;
+      try {
+        const url = await getSignedUrl(
+          s3,
+          new GetObjectCommand({ Bucket: bucket, Key: rep.photoKey }),
+          { expiresIn: 900 }
+        );
+        return { ...rep, photoUrl: url };
+      } catch {
+        return rep;
       }
-    } catch {
-      // Fallback to in-memory on Redis transient error
-    }
-  }
-  const mem = globalThis.__floodloopReports ?? [];
-  const pruned = pruneAndVerify(mem);
-  globalThis.__floodloopReports = pruned;
-  return pruned;
+    })
+  );
 }
 
-async function writeReports(reports: FloodReport[]): Promise<FloodReport[]> {
-  const pruned = pruneAndVerify(reports);
-  globalThis.__floodloopReports = pruned;
+async function readReports(): Promise<FloodReport[]> {
+  const { table, bucket, region } = getAwsConfig();
 
-  const redis = getRedisConfig();
-  if (redis) {
+  if (table) {
     try {
-      await fetch(`${redis.url}/set/${REDIS_KEY}`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${redis.token}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(JSON.stringify(pruned)),
-      });
+      const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({ region }));
+      const nowSec = Math.floor(Date.now() / 1000);
+      const res = await ddb.send(
+        new ScanCommand({
+          TableName: table,
+          Limit: MAX_REPORTS,
+        })
+      );
+
+      const items = ((res.Items ?? []) as Array<FloodReport & { expiresAt?: number }>)
+        .filter((item) => !item.expiresAt || item.expiresAt > nowSec)
+        .sort(
+          (a, b) =>
+            new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+        )
+        .slice(0, MAX_REPORTS);
+
+      const verified = recomputeVerifications(items);
+      return attachPresignedUrls(verified, bucket, region);
     } catch {
-      // Keep in-memory copy
+      // Fall back to in-memory store if DynamoDB is unreachable locally
     }
   }
-  return pruned;
+
+  const mem = globalThis.__floodloopReports ?? [];
+  const pruned = pruneMemory(mem);
+  globalThis.__floodloopReports = pruned;
+  return attachPresignedUrls(pruned, bucket, region);
 }
 
 export async function GET() {
@@ -101,15 +116,27 @@ export async function POST(req: NextRequest) {
       ? (body.severity as FloodReport["severity"])
       : "medium";
 
+    const photoKey =
+      typeof body.photoKey === "string" && body.photoKey.startsWith("reports/")
+        ? body.photoKey.slice(0, 180)
+        : undefined;
+
+    // Only store thumbnail in memory fallback if S3 photoKey is absent
     const thumbnail =
-      typeof body.thumbnail === "string" && body.thumbnail.length <= 28000
+      !photoKey &&
+      typeof body.thumbnail === "string" &&
+      body.thumbnail.length <= 28000
         ? body.thumbnail
-        : "";
+        : undefined;
+
+    const nowMs = Date.now();
+    const expiresAt = Math.floor(nowMs / 1000) + TTL_SECONDS;
 
     const newReport: FloodReport = {
-      id: `rep-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      id: `rep-${nowMs}-${Math.random().toString(36).slice(2, 7)}`,
       lat: body.lat,
       lng: body.lng,
+      photoKey,
       thumbnail,
       waterPresent: Boolean(body.waterPresent),
       severity,
@@ -119,11 +146,50 @@ export async function POST(req: NextRequest) {
           : "User submitted flood report.",
       verified: Boolean(body.waterPresent),
       demoMode: Boolean(body.demoMode),
-      createdAt: new Date().toISOString(),
+      createdAt: new Date(nowMs).toISOString(),
     };
 
-    const existing = await readReports();
-    const updated = await writeReports([newReport, ...existing]);
+    const { table, region } = getAwsConfig();
+    let savedToDdb = false;
+
+    if (table) {
+      try {
+        const ddb = DynamoDBDocumentClient.from(
+          new DynamoDBClient({ region })
+        );
+        // Store only photoKey (never raw base64 thumbnail) in DynamoDB
+        const item: Record<string, unknown> = {
+          id: newReport.id,
+          lat: newReport.lat,
+          lng: newReport.lng,
+          severity: newReport.severity,
+          waterPresent: newReport.waterPresent,
+          verified: newReport.verified,
+          reason: newReport.reason,
+          demoMode: newReport.demoMode,
+          createdAt: newReport.createdAt,
+          expiresAt,
+        };
+        if (newReport.photoKey) item.photoKey = newReport.photoKey;
+
+        await ddb.send(
+          new PutCommand({
+            TableName: table,
+            Item: item,
+          })
+        );
+        savedToDdb = true;
+      } catch {
+        // Fall back to in-memory
+      }
+    }
+
+    if (!savedToDdb) {
+      const mem = globalThis.__floodloopReports ?? [];
+      globalThis.__floodloopReports = pruneMemory([newReport, ...mem]);
+    }
+
+    const updated = await readReports();
     return NextResponse.json({ report: newReport, reports: updated });
   } catch {
     return NextResponse.json(

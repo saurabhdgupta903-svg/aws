@@ -260,9 +260,9 @@ export default function MapView({
               <Marker position={[rep.lat, rep.lng]} icon={pinIcons[rep.severity]}>
                 <Popup>
                   <div className="text-xs space-y-1.5 max-w-[180px]">
-                    {rep.thumbnail && (
+                    {(rep.photoUrl || rep.thumbnail) && (
                       <img
-                        src={rep.thumbnail}
+                        src={rep.photoUrl || rep.thumbnail}
                         alt="Reported waterlogging"
                         className="w-full h-24 object-cover rounded-md border border-slate-300"
                       />

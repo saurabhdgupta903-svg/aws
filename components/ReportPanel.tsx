@@ -11,7 +11,12 @@ import {
 } from "lucide-react";
 import { riskLevelLabel, type Translations } from "@/lib/i18n";
 import { RISK_COLORS, type RiskLevel } from "@/lib/risk";
-import { compressImageToThumbnail, postSharedReport, type FloodReport } from "@/lib/store";
+import {
+  compressImageToThumbnail,
+  postSharedReport,
+  uploadPhotoToS3,
+  type FloodReport,
+} from "@/lib/store";
 import type { LatLng } from "@/lib/geo";
 
 interface ReportPanelProps {
@@ -77,10 +82,13 @@ export default function ReportPanel({
         demoMode?: boolean;
       };
 
+      const photoKey = await uploadPhotoToS3(selectedFile);
+
       const updated = await postSharedReport({
         lat: activeCoords.lat,
         lng: activeCoords.lng,
-        thumbnail: previewUrl,
+        photoKey: photoKey ?? undefined,
+        thumbnail: photoKey ? undefined : previewUrl,
         waterPresent: data.waterPresent,
         severity: data.severity,
         reason: data.reason,
@@ -239,9 +247,9 @@ export default function ReportPanel({
                 key={rep.id}
                 className="flex items-start gap-3 rounded-xl bg-slate-800/70 border border-slate-700/60 p-2.5"
               >
-                {rep.thumbnail ? (
+                {rep.photoUrl || rep.thumbnail ? (
                   <img
-                    src={rep.thumbnail}
+                    src={rep.photoUrl || rep.thumbnail}
                     alt="Flood report"
                     className="w-12 h-12 rounded-lg object-cover shrink-0 border border-slate-600"
                   />

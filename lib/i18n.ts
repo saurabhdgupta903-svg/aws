@@ -505,8 +505,6 @@ export function hazardTypeLabel(type: HazardType, t: Translations): string {
   switch (type) {
     case "river_flood":
       return t.hazardRiver;
-    case "ghat_landslide":
-      return t.hazardLandslide;
     default:
       return t.hazardUrban;
   }

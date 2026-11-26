@@ -83,126 +83,17 @@ export function createFallbackWeather(): WeatherSnapshot {
 }
 
 /**
- * Compute current YYYY-MM-DDTHH in Asia/Kolkata (IST) so Open-Meteo
- * hourly timestamps (which are in Asia/Kolkata) align accurately.
+ * Fetch per-hotspot weather exclusively through our /api/weather server route
+ * (which batches Open-Meteo and caches for 10 minutes server-side).
  */
-function getCurrentKolkataHourPrefix(): string {
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Kolkata",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    hour12: false,
-  }).formatToParts(new Date());
-
-  const get = (type: string) =>
-    parts.find((p) => p.type === type)?.value ?? "00";
-  const hour = get("hour") === "24" ? "00" : get("hour");
-  return `${get("year")}-${get("month")}-${get("day")}T${hour}`;
-}
-
-interface OpenMeteoLocationPayload {
-  current?: { rain?: number; time?: string };
-  hourly?: {
-    time?: string[];
-    precipitation?: number[];
-    precipitation_probability?: number[];
-  };
-  daily?: {
-    precipitation_sum?: number[];
-  };
-}
-
-const WEATHER_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
-let cachedWeatherMap: {
-  data: Record<string, WeatherSnapshot>;
-  timestamp: number;
-} | null = null;
-
-export async function fetchWeatherForHotspots(
-  hotspots: HotspotSeed[]
-): Promise<Record<string, WeatherSnapshot>> {
-  const now = Date.now();
-  if (
-    cachedWeatherMap &&
-    now - cachedWeatherMap.timestamp < WEATHER_CACHE_TTL_MS
-  ) {
-    return cachedWeatherMap.data;
-  }
-
-  if (hotspots.length === 0) return {};
-
-  const lats = hotspots.map((h) => h.lat.toFixed(4)).join(",");
-  const lngs = hotspots.map((h) => h.lng.toFixed(4)).join(",");
-
-  const url = `https://api.open-meteo.com/v1/forecast?latitude=${lats}&longitude=${lngs}&current=rain&hourly=precipitation,precipitation_probability&daily=precipitation_sum&forecast_days=3&timezone=Asia%2FKolkata`;
-
-  const res = await fetch(url);
+export async function fetchWeatherForHotspots(): Promise<
+  Record<string, WeatherSnapshot>
+> {
+  const res = await fetch("/api/weather");
   if (!res.ok) {
-    throw new Error(`Open-Meteo request failed (${res.status})`);
+    throw new Error(`Weather API failed (${res.status})`);
   }
-
-  const raw = (await res.json()) as
-    | OpenMeteoLocationPayload
-    | OpenMeteoLocationPayload[];
-  const payloads = Array.isArray(raw) ? raw : [raw];
-  const istHourPrefix = getCurrentKolkataHourPrefix();
-  const fetchedAt = new Date().toISOString();
-
-  const result: Record<string, WeatherSnapshot> = {};
-
-  hotspots.forEach((hs, idx) => {
-    const loc = payloads[idx] ?? payloads[0];
-    const currentRainMm = Number(loc?.current?.rain ?? 0);
-    const times = loc?.hourly?.time ?? [];
-    const precips = loc?.hourly?.precipitation ?? [];
-    const probs = loc?.hourly?.precipitation_probability ?? [];
-    const dailySums = loc?.daily?.precipitation_sum ?? [];
-
-    let startIdx = times.findIndex((t) => t >= istHourPrefix);
-    if (startIdx < 0) startIdx = 0;
-
-    const hourly6h: HourlyRainPoint[] = [];
-    let next6hRainTotalMm = 0;
-    let next24hRainTotalMm = 0;
-    let maxNext6hProbPct = 0;
-
-    for (let i = 0; i < 24; i++) {
-      const hIdx = startIdx + i;
-      if (hIdx >= times.length) break;
-      const mm = Number(precips[hIdx] ?? 0);
-      const prob = Number(probs[hIdx] ?? 0);
-      next24hRainTotalMm += mm;
-
-      if (i < 6) {
-        next6hRainTotalMm += mm;
-        if (prob > maxNext6hProbPct) maxNext6hProbPct = prob;
-        hourly6h.push({
-          timeLabel: times[hIdx]?.slice(11, 16) || `+${i + 1}h`,
-          precipitationMm: Number(mm.toFixed(1)),
-          probabilityPct: prob,
-        });
-      }
-    }
-
-    const daily3dSumMm = dailySums
-      .slice(0, 3)
-      .reduce((acc, v) => acc + Number(v ?? 0), 0);
-
-    result[hs.id] = {
-      currentRainMm: Number(currentRainMm.toFixed(1)),
-      next6hRainTotalMm: Number(next6hRainTotalMm.toFixed(1)),
-      next24hRainTotalMm: Number(next24hRainTotalMm.toFixed(1)),
-      daily3dSumMm: Number(daily3dSumMm.toFixed(1)),
-      maxNext6hProbPct,
-      hourly6h,
-      fetchedAt,
-    };
-  });
-
-  cachedWeatherMap = { data: result, timestamp: now };
-  return result;
+  return (await res.json()) as Record<string, WeatherSnapshot>;
 }
 
 export function applyRainSimulationToMap(
@@ -268,12 +159,6 @@ export function computeHotspotRisk(
       riverProxScore +
       probScore +
       reportScore;
-  } else if (hotspot.hazardType === "ghat_landslide") {
-    // Ghat landslides correlate strongly with 24h saturation + slope vulnerability
-    const rainNowScore = Math.min(14, (weather.currentRainMm / 40) * 14);
-    const rain24hScore = Math.min(36, (weather.next24hRainTotalMm / 150) * 36);
-    const slopeScore = hotspot.baseVulnerability * 26;
-    rawScore = rainNowScore + rain24hScore + slopeScore + probScore + reportScore;
   } else {
     // Urban waterlogging: intense short-term current + 6h rain
     const rainNowScore = Math.min(28, (weather.currentRainMm / 40) * 28);
@@ -294,9 +179,6 @@ export function computeHotspotRisk(
   };
 }
 
-/**
- * City risk = worst hotspot score in that city.
- */
 export function computeCityRisk(
   hotspotRisks: HotspotRisk[],
   cityName: string

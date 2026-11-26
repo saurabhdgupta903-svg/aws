@@ -74,7 +74,7 @@ export default function HomePage() {
     setWeatherLoading(true);
     setWeatherError(null);
     try {
-      const data = await fetchWeatherForHotspots(SEEDED_HOTSPOTS);
+      const data = await fetchWeatherForHotspots();
       setWeatherMap(data);
     } catch (err) {
       setWeatherError(err instanceof Error ? err.message : "Weather fetch failed");
@@ -136,6 +136,24 @@ export default function HomePage() {
   );
 
   const stateSummary = useMemo(() => computeStateSummary(hotspotRisks), [hotspotRisks]);
+
+  // Trigger SNS alert when a live hotspot reaches High or Severe
+  useEffect(() => {
+    const peak = stateSummary.top5[0];
+    if (!peak || (peak.level !== "high" && peak.level !== "severe")) return;
+    if (simulateRegion !== "off") return;
+    fetch("/api/alert", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        hotspotId: peak.hotspot.id,
+        hotspotName: peak.hotspot.name,
+        city: peak.hotspot.city,
+        score: peak.score,
+        level: peak.level,
+      }),
+    }).catch(() => {});
+  }, [stateSummary, simulateRegion]);
 
   const focusedCityName = selectedCity?.name ?? t.allMaharashtra;
   const focusedCityRisk = useMemo(() =>

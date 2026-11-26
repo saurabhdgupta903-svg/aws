@@ -1,12 +1,23 @@
 import { NextRequest, NextResponse } from "next/server";
+import {
+  BedrockRuntimeClient,
+  ConverseCommand,
+} from "@aws-sdk/client-bedrock-runtime";
+import {
+  RekognitionClient,
+  DetectLabelsCommand,
+  type Label,
+} from "@aws-sdk/client-rekognition";
 
 type Severity = "low" | "medium" | "high" | "severe";
+type AnalyzeProvider = "bedrock" | "rekognition" | "mock";
 
 interface AnalyzeResponse {
   waterPresent: boolean;
   severity: Severity;
   reason: string;
   demoMode: boolean;
+  provider?: AnalyzeProvider;
 }
 
 const VALID_SEVERITIES: Severity[] = ["low", "medium", "high", "severe"];
@@ -35,7 +46,7 @@ function mockAnalysis(seedText: string): AnalyzeResponse {
     (acc, ch) => (acc * 31 + ch.charCodeAt(0)) >>> 0,
     7
   );
-  const scenarios: Array<Omit<AnalyzeResponse, "demoMode">> = [
+  const scenarios: Array<Omit<AnalyzeResponse, "demoMode" | "provider">> = [
     {
       waterPresent: true,
       severity: "high",
@@ -62,7 +73,162 @@ function mockAnalysis(seedText: string): AnalyzeResponse {
     },
   ];
   const pick = scenarios[hash % scenarios.length];
-  return { ...pick, demoMode: true };
+  return { ...pick, demoMode: true, provider: "mock" };
+}
+
+function parseValidatedJson(rawText: string): Omit<AnalyzeResponse, "demoMode" | "provider"> {
+  const cleaned = rawText
+    .replace(/^```json\s*/i, "")
+    .replace(/^```\s*/i, "")
+    .replace(/```\s*$/i, "")
+    .trim();
+
+  const parsed = JSON.parse(cleaned) as Record<string, unknown>;
+  if (typeof parsed.waterPresent !== "boolean") {
+    throw new Error("Invalid Bedrock JSON: missing boolean waterPresent");
+  }
+  const severity = VALID_SEVERITIES.includes(parsed.severity as Severity)
+    ? (parsed.severity as Severity)
+    : null;
+  if (!severity) {
+    throw new Error("Invalid Bedrock JSON: invalid severity");
+  }
+  const reason =
+    typeof parsed.reason === "string" && parsed.reason.trim()
+      ? parsed.reason.trim().slice(0, 220)
+      : "Analyzed street condition.";
+
+  return { waterPresent: parsed.waterPresent, severity, reason };
+}
+
+async function analyzeWithBedrock(
+  bytes: Uint8Array,
+  mimeType: string
+): Promise<AnalyzeResponse> {
+  const region = process.env.AWS_REGION?.trim() || "ap-south-1";
+  const modelId =
+    process.env.BEDROCK_MODEL_ID?.trim() || "amazon.nova-lite-v1:0";
+
+  const format = mimeType.includes("png")
+    ? "png"
+    : mimeType.includes("webp")
+      ? "webp"
+      : "jpeg";
+
+  const client = new BedrockRuntimeClient({ region });
+  const command = new ConverseCommand({
+    modelId,
+    messages: [
+      {
+        role: "user",
+        content: [
+          {
+            text: 'Analyze this street photo in Maharashtra for waterlogging or flooding. Return ONLY raw JSON with keys: {"waterPresent": boolean, "severity": "low"|"medium"|"high"|"severe", "reason": string}. Keep reason under 25 words.',
+          },
+          {
+            image: {
+              format,
+              source: { bytes },
+            },
+          },
+        ],
+      },
+    ],
+    inferenceConfig: {
+      temperature: 0.1,
+      maxTokens: 200,
+    },
+  });
+
+  const response = await client.send(command);
+  const textBlock = response.output?.message?.content?.find(
+    (c) => typeof c.text === "string"
+  );
+  if (!textBlock?.text) {
+    throw new Error("Empty Bedrock response");
+  }
+
+  const validated = parseValidatedJson(textBlock.text);
+  return { ...validated, demoMode: false, provider: "bedrock" };
+}
+
+/**
+ * Derive flood presence and severity from Amazon Rekognition DetectLabels:
+ * - Flood >= 75% confidence -> waterPresent: true, severity: "severe" (if Vehicle/Car/Person also present) or "high"
+ * - Water / Body of Water / River >= 70% with Road/Street/Car/Person -> waterPresent: true, severity: "high"
+ * - Puddle >= 65% -> waterPresent: true, severity: "medium"
+ * - Otherwise -> waterPresent: false, severity: "low" ("No flooding visible")
+ */
+function mapRekognitionLabels(
+  labels: Label[]
+): Omit<AnalyzeResponse, "demoMode" | "provider"> {
+  const conf = (name: string) =>
+    labels.find((l) => l.Name?.toLowerCase() === name.toLowerCase())
+      ?.Confidence ?? 0;
+
+  const floodConf = conf("Flood");
+  const waterConf = Math.max(
+    conf("Water"),
+    conf("Body of Water"),
+    conf("River")
+  );
+  const puddleConf = conf("Puddle");
+  const hasTrafficOrPeople =
+    Math.max(conf("Car"), conf("Vehicle"), conf("Person")) >= 65;
+  const hasRoad = Math.max(conf("Road"), conf("Street")) >= 60;
+
+  if (floodConf >= 75) {
+    return {
+      waterPresent: true,
+      severity: hasTrafficOrPeople ? "severe" : "high",
+      reason: `Rekognition detected Flood (${Math.round(
+        floodConf
+      )}% confidence)${
+        hasTrafficOrPeople ? " affecting nearby vehicles/pedestrians" : ""
+      }.`,
+    };
+  }
+
+  if (waterConf >= 70 && (hasRoad || hasTrafficOrPeople)) {
+    return {
+      waterPresent: true,
+      severity: hasTrafficOrPeople ? "high" : "medium",
+      reason: `Rekognition detected standing Water (${Math.round(
+        waterConf
+      )}% confidence) on roadway.`,
+    };
+  }
+
+  if (puddleConf >= 65) {
+    return {
+      waterPresent: true,
+      severity: "medium",
+      reason: `Rekognition detected Puddle (${Math.round(
+        puddleConf
+      )}% confidence) along street surface.`,
+    };
+  }
+
+  return {
+    waterPresent: false,
+    severity: "low",
+    reason: "No flooding visible in Rekognition label analysis.",
+  };
+}
+
+async function analyzeWithRekognition(
+  bytes: Uint8Array
+): Promise<AnalyzeResponse> {
+  const region = process.env.AWS_REGION?.trim() || "ap-south-1";
+  const client = new RekognitionClient({ region });
+  const command = new DetectLabelsCommand({
+    Image: { Bytes: bytes },
+    MaxLabels: 20,
+    MinConfidence: 60,
+  });
+  const res = await client.send(command);
+  const mapped = mapRekognitionLabels(res.Labels ?? []);
+  return { ...mapped, demoMode: false, provider: "rekognition" };
 }
 
 export async function POST(req: NextRequest) {
@@ -79,7 +245,7 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    let base64Data = "";
+    let bytes: Uint8Array;
     let mimeType = "image/jpeg";
     let seed = "flood-report";
 
@@ -105,9 +271,7 @@ export async function POST(req: NextRequest) {
           { status: 413 }
         );
       }
-
-      const buffer = Buffer.from(await file.arrayBuffer());
-      base64Data = buffer.toString("base64");
+      bytes = new Uint8Array(await file.arrayBuffer());
       mimeType = file.type;
       seed = `${file.name}-${file.size}-${Date.now() % 4}`;
     } else {
@@ -128,81 +292,38 @@ export async function POST(req: NextRequest) {
           { status: 400 }
         );
       }
-      base64Data = body.imageBase64.replace(/^data:[^;]+;base64,/, "");
-      if (Buffer.byteLength(base64Data, "base64") > MAX_FILE_BYTES) {
+      const b64 = body.imageBase64.replace(/^data:[^;]+;base64,/, "");
+      const buf = Buffer.from(b64, "base64");
+      if (buf.byteLength > MAX_FILE_BYTES) {
         return NextResponse.json(
           { error: "Image exceeds 4MB size limit." },
           { status: 413 }
         );
       }
-      seed = `${base64Data.length}-${Date.now() % 4}`;
+      bytes = new Uint8Array(buf);
+      seed = `${buf.byteLength}-${Date.now() % 4}`;
     }
 
-    const apiKey = process.env.GEMINI_API_KEY?.trim();
-    if (!apiKey) {
-      return NextResponse.json(mockAnalysis(seed));
+    const provider = (process.env.ANALYZE_PROVIDER?.trim().toLowerCase() ||
+      "mock") as AnalyzeProvider;
+
+    if (provider === "bedrock") {
+      try {
+        return NextResponse.json(await analyzeWithBedrock(bytes, mimeType));
+      } catch {
+        return NextResponse.json(mockAnalysis(seed));
+      }
     }
 
-    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(
-      apiKey
-    )}`;
-
-    const prompt =
-      'Analyze this street or highway photo in Maharashtra for waterlogging, river flooding, or landslide debris. Return ONLY valid JSON with keys: {"waterPresent": boolean, "severity": "low"|"medium"|"high"|"severe", "reason": string}. Keep reason under 25 words.';
-
-    const geminiRes = await fetch(geminiUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [
-          {
-            parts: [
-              { text: prompt },
-              {
-                inlineData: {
-                  mimeType,
-                  data: base64Data,
-                },
-              },
-            ],
-          },
-        ],
-        generationConfig: {
-          responseMimeType: "application/json",
-          temperature: 0.2,
-        },
-      }),
-    });
-
-    if (!geminiRes.ok) {
-      return NextResponse.json(mockAnalysis(seed));
+    if (provider === "rekognition") {
+      try {
+        return NextResponse.json(await analyzeWithRekognition(bytes));
+      } catch {
+        return NextResponse.json(mockAnalysis(seed));
+      }
     }
 
-    const geminiJson = (await geminiRes.json()) as {
-      candidates?: Array<{
-        content?: { parts?: Array<{ text?: string }> };
-      }>;
-    };
-
-    const rawText =
-      geminiJson.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
-    const parsed = JSON.parse(rawText) as Partial<AnalyzeResponse>;
-
-    const severity: Severity = VALID_SEVERITIES.includes(
-      parsed.severity as Severity
-    )
-      ? (parsed.severity as Severity)
-      : "medium";
-
-    return NextResponse.json({
-      waterPresent: Boolean(parsed.waterPresent),
-      severity,
-      reason:
-        typeof parsed.reason === "string" && parsed.reason.trim()
-          ? parsed.reason.trim()
-          : "Analyzed street condition for surface water.",
-      demoMode: false,
-    } satisfies AnalyzeResponse);
+    return NextResponse.json(mockAnalysis(seed));
   } catch {
     return NextResponse.json(mockAnalysis("fallback"));
   }
