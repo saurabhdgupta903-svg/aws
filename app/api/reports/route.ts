@@ -1,200 +1,272 @@
 import { NextRequest, NextResponse } from "next/server";
-import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import {
-  DynamoDBDocumentClient,
-  PutCommand,
-  ScanCommand,
-} from "@aws-sdk/lib-dynamodb";
-import { S3Client, GetObjectCommand } from "@aws-sdk/client-s3";
-import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
-import { recomputeVerifications, type FloodReport } from "@/lib/store";
+  ALLOWED_REPORT_TYPES,
+  ALLOWED_STATUSES,
+  MAX_BODY_BYTES,
+  applyCorsHeaders,
+  checkRateLimit,
+  getClientIp,
+  handleCorsPreflight,
+  type ReportStatus,
+  type ReportType,
+} from "../../../lib/reportSecurity";
+import {
+  ValidationError,
+  createReport,
+  listReports,
+  type CreateReportInput,
+} from "../../../lib/reportsService";
 
-const MAX_REPORTS = 200;
-const TTL_SECONDS = 24 * 60 * 60; // 24 hours
-const TTL_MS = TTL_SECONDS * 1000;
-
-declare global {
-  var __floodloopReports: FloodReport[] | undefined;
+function parseFiniteNumber(raw: string | null): number | undefined {
+  if (raw === null || raw.trim() === "") return undefined;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : NaN;
 }
 
-function getAwsConfig() {
-  const table = process.env.DDB_TABLE?.trim();
-  const bucket = process.env.S3_BUCKET?.trim();
-  const region = process.env.AWS_REGION?.trim() || "ap-south-1";
-  return { table, bucket, region };
+export async function OPTIONS(req: NextRequest) {
+  return handleCorsPreflight(req);
 }
 
-function pruneMemory(reports: FloodReport[]): FloodReport[] {
-  const cutoff = Date.now() - TTL_MS;
-  const fresh = reports
-    .filter((r) => new Date(r.createdAt).getTime() >= cutoff)
-    .slice(0, MAX_REPORTS);
-  return recomputeVerifications(fresh);
-}
+export async function GET(req: NextRequest) {
+  try {
+    const sp = req.nextUrl.searchParams;
 
-async function attachPresignedUrls(
-  reports: FloodReport[],
-  bucket?: string,
-  region?: string
-): Promise<FloodReport[]> {
-  if (!bucket) return reports;
-  const s3 = new S3Client({ region: region || "ap-south-1" });
-  return Promise.all(
-    reports.map(async (rep) => {
-      if (!rep.photoKey) return rep;
-      try {
-        const url = await getSignedUrl(
-          s3,
-          new GetObjectCommand({ Bucket: bucket, Key: rep.photoKey }),
-          { expiresIn: 900 }
-        );
-        return { ...rep, photoUrl: url };
-      } catch {
-        return rep;
-      }
-    })
-  );
-}
-
-async function readReports(): Promise<FloodReport[]> {
-  const { table, bucket, region } = getAwsConfig();
-
-  if (table) {
-    try {
-      const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({ region }));
-      const nowSec = Math.floor(Date.now() / 1000);
-      const res = await ddb.send(
-        new ScanCommand({
-          TableName: table,
-          Limit: MAX_REPORTS,
-        })
-      );
-
-      const items = ((res.Items ?? []) as Array<FloodReport & { expiresAt?: number }>)
-        .filter((item) => !item.expiresAt || item.expiresAt > nowSec)
-        .sort(
-          (a, b) =>
-            new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    const limitRaw = parseFiniteNumber(sp.get("limit"));
+    if (limitRaw !== undefined && (Number.isNaN(limitRaw) || limitRaw < 1)) {
+      return applyCorsHeaders(
+        req,
+        NextResponse.json(
+          { error: "Invalid 'limit' query parameter." },
+          { status: 400 }
         )
-        .slice(0, MAX_REPORTS);
-
-      const verified = recomputeVerifications(items);
-      return attachPresignedUrls(verified, bucket, region);
-    } catch {
-      // Fall back to in-memory store if DynamoDB is unreachable locally
+      );
     }
+
+    const offsetRaw = parseFiniteNumber(sp.get("offset"));
+    if (offsetRaw !== undefined && (Number.isNaN(offsetRaw) || offsetRaw < 0)) {
+      return applyCorsHeaders(
+        req,
+        NextResponse.json(
+          { error: "Invalid 'offset' query parameter." },
+          { status: 400 }
+        )
+      );
+    }
+
+    const typeParam = (sp.get("type") ?? sp.get("category"))?.trim().toLowerCase();
+    if (
+      typeParam &&
+      !ALLOWED_REPORT_TYPES.includes(typeParam as ReportType)
+    ) {
+      return applyCorsHeaders(
+        req,
+        NextResponse.json(
+          {
+            error: `Invalid 'type' filter. Allowed: ${ALLOWED_REPORT_TYPES.join(", ")}.`,
+          },
+          { status: 400 }
+        )
+      );
+    }
+
+    const statusParam = sp.get("status")?.trim().toLowerCase();
+    if (
+      statusParam &&
+      !ALLOWED_STATUSES.includes(statusParam as ReportStatus)
+    ) {
+      return applyCorsHeaders(
+        req,
+        NextResponse.json(
+          {
+            error: `Invalid 'status' filter. Allowed: ${ALLOWED_STATUSES.join(", ")}.`,
+          },
+          { status: 400 }
+        )
+      );
+    }
+
+    const minLat = parseFiniteNumber(sp.get("min_lat"));
+    const maxLat = parseFiniteNumber(sp.get("max_lat"));
+    const minLng = parseFiniteNumber(sp.get("min_lng"));
+    const maxLng = parseFiniteNumber(sp.get("max_lng"));
+
+    const bboxValues = [minLat, maxLat, minLng, maxLng];
+    const anyBbox = bboxValues.some((v) => v !== undefined);
+    const allBbox = bboxValues.every((v) => v !== undefined);
+    if (anyBbox && !allBbox) {
+      return applyCorsHeaders(
+        req,
+        NextResponse.json(
+          {
+            error:
+              "Bounding box requires all four parameters: min_lat, max_lat, min_lng, max_lng.",
+          },
+          { status: 400 }
+        )
+      );
+    }
+    if (
+      allBbox &&
+      (bboxValues.some((v) => Number.isNaN(v)) ||
+        minLat! < -90 ||
+        maxLat! > 90 ||
+        minLat! > maxLat! ||
+        minLng! < -180 ||
+        maxLng! > 180 ||
+        minLng! > maxLng!)
+    ) {
+      return applyCorsHeaders(
+        req,
+        NextResponse.json(
+          { error: "Invalid bounding box coordinates." },
+          { status: 400 }
+        )
+      );
+    }
+
+    const lat = parseFiniteNumber(sp.get("lat"));
+    const lng = parseFiniteNumber(sp.get("lng"));
+    const radiusKm = parseFiniteNumber(sp.get("radius_km"));
+    const radiusValues = [lat, lng, radiusKm];
+    const anyRadius = radiusValues.some((v) => v !== undefined);
+    const allRadius = radiusValues.every((v) => v !== undefined);
+
+    if (anyRadius && !allRadius) {
+      return applyCorsHeaders(
+        req,
+        NextResponse.json(
+          {
+            error:
+              "Radius filter requires all three parameters: lat, lng, radius_km.",
+          },
+          { status: 400 }
+        )
+      );
+    }
+    if (
+      allRadius &&
+      (radiusValues.some((v) => Number.isNaN(v)) ||
+        lat! < -90 ||
+        lat! > 90 ||
+        lng! < -180 ||
+        lng! > 180 ||
+        radiusKm! <= 0 ||
+        radiusKm! > 2000)
+    ) {
+      return applyCorsHeaders(
+        req,
+        NextResponse.json(
+          { error: "Invalid lat/lng/radius_km parameters." },
+          { status: 400 }
+        )
+      );
+    }
+
+    const result = await listReports({
+      limit: limitRaw,
+      offset: offsetRaw,
+      type: typeParam || undefined,
+      status: statusParam || undefined,
+      minLat: allBbox ? minLat : undefined,
+      maxLat: allBbox ? maxLat : undefined,
+      minLng: allBbox ? minLng : undefined,
+      maxLng: allBbox ? maxLng : undefined,
+      lat: allRadius ? lat : undefined,
+      lng: allRadius ? lng : undefined,
+      radiusKm: allRadius ? radiusKm : undefined,
+    });
+
+    return applyCorsHeaders(req, NextResponse.json(result, { status: 200 }));
+  } catch {
+    return applyCorsHeaders(
+      req,
+      NextResponse.json(
+        { error: "Failed to fetch reports." },
+        { status: 500 }
+      )
+    );
   }
-
-  const mem = globalThis.__floodloopReports ?? [];
-  const pruned = pruneMemory(mem);
-  globalThis.__floodloopReports = pruned;
-  return attachPresignedUrls(pruned, bucket, region);
-}
-
-export async function GET() {
-  const reports = await readReports();
-  return NextResponse.json({ reports });
 }
 
 export async function POST(req: NextRequest) {
+  const ip = getClientIp(req);
+  const rate = checkRateLimit(ip);
+  if (!rate.allowed) {
+    const res = NextResponse.json(
+      { error: "Too many report submissions. Please try again shortly." },
+      { status: 429 }
+    );
+    res.headers.set("Retry-After", String(rate.retryAfterSec));
+    return applyCorsHeaders(req, res);
+  }
+
+  const contentLength = Number(req.headers.get("content-length") ?? "0");
+  if (Number.isFinite(contentLength) && contentLength > MAX_BODY_BYTES) {
+    return applyCorsHeaders(
+      req,
+      NextResponse.json(
+        { error: "Request payload too large." },
+        { status: 413 }
+      )
+    );
+  }
+
+  let rawBody: string;
   try {
-    const body = (await req.json()) as Partial<FloodReport>;
-    if (
-      typeof body.lat !== "number" ||
-      typeof body.lng !== "number" ||
-      Number.isNaN(body.lat) ||
-      Number.isNaN(body.lng)
-    ) {
-      return NextResponse.json(
-        { error: "Invalid lat/lng coordinates." },
-        { status: 400 }
+    rawBody = await req.text();
+  } catch {
+    return applyCorsHeaders(
+      req,
+      NextResponse.json({ error: "Failed to read request body." }, { status: 400 })
+    );
+  }
+
+  if (Buffer.byteLength(rawBody, "utf8") > MAX_BODY_BYTES) {
+    return applyCorsHeaders(
+      req,
+      NextResponse.json(
+        { error: "Request payload too large." },
+        { status: 413 }
+      )
+    );
+  }
+
+  let body: CreateReportInput;
+  try {
+    body = JSON.parse(rawBody) as CreateReportInput;
+  } catch {
+    return applyCorsHeaders(
+      req,
+      NextResponse.json({ error: "Invalid JSON request body." }, { status: 400 })
+    );
+  }
+
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return applyCorsHeaders(
+      req,
+      NextResponse.json({ error: "Request body must be a JSON object." }, { status: 400 })
+    );
+  }
+
+  try {
+    const report = await createReport(body);
+    return applyCorsHeaders(
+      req,
+      NextResponse.json({ report }, { status: 201 })
+    );
+  } catch (err) {
+    if (err instanceof ValidationError) {
+      return applyCorsHeaders(
+        req,
+        NextResponse.json({ error: err.message }, { status: err.status })
       );
     }
-
-    const validSeverities = ["low", "medium", "high", "severe"];
-    const severity = validSeverities.includes(String(body.severity))
-      ? (body.severity as FloodReport["severity"])
-      : "medium";
-
-    const photoKey =
-      typeof body.photoKey === "string" && body.photoKey.startsWith("reports/")
-        ? body.photoKey.slice(0, 180)
-        : undefined;
-
-    // Only store thumbnail in memory fallback if S3 photoKey is absent
-    const thumbnail =
-      !photoKey &&
-      typeof body.thumbnail === "string" &&
-      body.thumbnail.length <= 28000
-        ? body.thumbnail
-        : undefined;
-
-    const nowMs = Date.now();
-    const expiresAt = Math.floor(nowMs / 1000) + TTL_SECONDS;
-
-    const newReport: FloodReport = {
-      id: `rep-${nowMs}-${Math.random().toString(36).slice(2, 7)}`,
-      lat: body.lat,
-      lng: body.lng,
-      photoKey,
-      thumbnail,
-      waterPresent: Boolean(body.waterPresent),
-      severity,
-      reason:
-        typeof body.reason === "string"
-          ? body.reason.slice(0, 240)
-          : "User submitted flood report.",
-      verified: Boolean(body.waterPresent),
-      demoMode: Boolean(body.demoMode),
-      createdAt: new Date(nowMs).toISOString(),
-    };
-
-    const { table, region } = getAwsConfig();
-    let savedToDdb = false;
-
-    if (table) {
-      try {
-        const ddb = DynamoDBDocumentClient.from(
-          new DynamoDBClient({ region })
-        );
-        // Store only photoKey (never raw base64 thumbnail) in DynamoDB
-        const item: Record<string, unknown> = {
-          id: newReport.id,
-          lat: newReport.lat,
-          lng: newReport.lng,
-          severity: newReport.severity,
-          waterPresent: newReport.waterPresent,
-          verified: newReport.verified,
-          reason: newReport.reason,
-          demoMode: newReport.demoMode,
-          createdAt: newReport.createdAt,
-          expiresAt,
-        };
-        if (newReport.photoKey) item.photoKey = newReport.photoKey;
-
-        await ddb.send(
-          new PutCommand({
-            TableName: table,
-            Item: item,
-          })
-        );
-        savedToDdb = true;
-      } catch {
-        // Fall back to in-memory
-      }
-    }
-
-    if (!savedToDdb) {
-      const mem = globalThis.__floodloopReports ?? [];
-      globalThis.__floodloopReports = pruneMemory([newReport, ...mem]);
-    }
-
-    const updated = await readReports();
-    return NextResponse.json({ report: newReport, reports: updated });
-  } catch {
-    return NextResponse.json(
-      { error: "Failed to save report." },
-      { status: 400 }
+    return applyCorsHeaders(
+      req,
+      NextResponse.json(
+        { error: "Failed to save report." },
+        { status: 500 }
+      )
     );
   }
 }

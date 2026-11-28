@@ -18,7 +18,10 @@ import { STATE_BOUNDS, STATE_CENTER } from "@/lib/hotspots";
 import { hazardTypeLabel, hotspotDisplayName, riskLevelLabel, type Lang, type Translations } from "@/lib/i18n";
 import { RISK_COLORS, type HotspotRisk } from "@/lib/risk";
 import type { FloodReport } from "@/lib/store";
-import type { LatLng, RoutePlanResult } from "@/lib/geo";
+import type { LatLng } from "@/lib/geo";
+import type { SafeRoute } from "@/lib/safeRoutes";
+
+const ROUTE_COLORS = ["#22c55e", "#3b82f6", "#a855f7"] as const;
 
 interface MapViewProps {
   hotspotRisks: HotspotRisk[];
@@ -27,7 +30,9 @@ interface MapViewProps {
   reportPin: LatLng | null;
   routeSource: LatLng | null;
   routeDest: LatLng | null;
-  routeResult: RoutePlanResult | null;
+  safeRoutes: SafeRoute[] | null;
+  selectedRouteId: string | null;
+  onSelectRoute: (id: string) => void;
   mapPickMode: "report" | "source" | "destination" | null;
   flyTarget: { lat: number; lng: number; zoom: number } | null;
   currentZoom: number;
@@ -124,7 +129,9 @@ export default function MapView({
   reportPin,
   routeSource,
   routeDest,
-  routeResult,
+  safeRoutes,
+  selectedRouteId,
+  onSelectRoute,
   mapPickMode,
   flyTarget,
   currentZoom,
@@ -259,19 +266,32 @@ export default function MapView({
               )}
               <Marker position={[rep.lat, rep.lng]} icon={pinIcons[rep.severity]}>
                 <Popup>
-                  <div className="text-xs space-y-1.5 max-w-[180px]">
-                    {(rep.photoUrl || rep.thumbnail) && (
+                  <div className="text-xs space-y-1.5 max-w-[200px]">
+                    {(rep.photoUrl || rep.thumbnail || rep.imageUrl) && (
                       <img
-                        src={rep.photoUrl || rep.thumbnail}
+                        src={rep.photoUrl || rep.thumbnail || rep.imageUrl || undefined}
                         alt="Reported waterlogging"
                         className="w-full h-24 object-cover rounded-md border border-slate-300"
                       />
                     )}
+                    {rep.title && (
+                      <p className="font-bold text-slate-900">{rep.title}</p>
+                    )}
                     <p className="font-bold text-slate-900">
                       {riskLevelLabel(rep.severity, t)} · {rep.verified ? t.verifiedBadge : t.unverifiedBadge}
                     </p>
-                    <p className="text-[11px] text-slate-700">{rep.reason}</p>
-                    <p className="text-[10px] text-slate-500">{t.reportZoneLabel}</p>
+                    <p className="text-[10px] uppercase tracking-wide text-slate-500">
+                      {(rep.type ?? "flood").replace("_", " ")} · {rep.status ?? "active"}
+                    </p>
+                    <p className="text-[11px] text-slate-700">{rep.description || rep.reason}</p>
+                    <p className="text-[10px] text-slate-500">
+                      {new Date(rep.createdAt).toLocaleString([], {
+                        month: "short",
+                        day: "numeric",
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })}
+                    </p>
                   </div>
                 </Popup>
               </Marker>
@@ -286,26 +306,64 @@ export default function MapView({
         {routeSource && <Marker position={[routeSource.lat, routeSource.lng]} icon={pinIcons.src} />}
         {routeDest && <Marker position={[routeDest.lat, routeDest.lng]} icon={pinIcons.dst} />}
 
-        {/* Rejected Flooded Routes (dashed red) */}
-        {routeResult?.rejectedRoutes.map((route) => (
-          <Polyline
-            key={route.id}
-            positions={route.coordinates}
-            pathOptions={{ color: "#ef4444", weight: 4, opacity: 0.85, dashArray: "8, 8" }}
-          />
-        ))}
+        {/* Alternative Routes (unselected first, selected last on top) */}
+        {safeRoutes &&
+          safeRoutes
+            .map((route, idx) => ({ route, color: ROUTE_COLORS[idx % ROUTE_COLORS.length] }))
+            .sort((a, b) => {
+              const aSel = a.route.id === selectedRouteId ? 1 : 0;
+              const bSel = b.route.id === selectedRouteId ? 1 : 0;
+              return aSel - bSel;
+            })
+            .map(({ route, color }) => {
+              const isSelected = route.id === selectedRouteId;
+              return (
+                <Polyline
+                  key={route.id}
+                  positions={route.geometry}
+                  pathOptions={{
+                    color,
+                    weight: isSelected ? 6 : 4,
+                    opacity: isSelected ? 0.95 : 0.55,
+                  }}
+                  eventHandlers={{
+                    click: () => onSelectRoute(route.id),
+                  }}
+                />
+              );
+            })}
 
-        {/* Safe Route (green, or orange if all flooded) */}
-        {routeResult?.selectedRoute && (
-          <Polyline
-            positions={routeResult.selectedRoute.coordinates}
-            pathOptions={{
-              color: routeResult.allFlooded ? "#f97316" : "#22c55e",
-              weight: 5,
-              opacity: 0.95,
-            }}
-          />
-        )}
+        {/* Hazard markers near the selected route */}
+        {safeRoutes
+          ?.find((r) => r.id === selectedRouteId)
+          ?.hazards_on_route.nearest.map((hazard) => {
+            const sevColor =
+              RISK_COLORS[hazard.severity as keyof typeof RISK_COLORS] ?? RISK_COLORS.medium;
+            return (
+              <Marker
+                key={`route-hazard-${hazard.id}`}
+                position={[hazard.lat, hazard.lng]}
+                icon={
+                  pinIcons[hazard.severity as keyof typeof pinIcons] ?? pinIcons.medium
+                }
+              >
+                <Popup>
+                  <div className="text-xs space-y-1 min-w-[140px]">
+                    <p className="font-bold text-slate-900">{hazard.name}</p>
+                    <p className="text-slate-700">
+                      Severity:{" "}
+                      <span className="font-bold uppercase" style={{ color: sevColor }}>
+                        {hazard.severity}
+                      </span>
+                    </p>
+                    <p className="text-[11px] text-slate-500">
+                      {hazard.distance_m} m from route
+                    </p>
+                  </div>
+                </Popup>
+              </Marker>
+            );
+          })}
       </MapContainer>
 
       {/* Risk Legend */}

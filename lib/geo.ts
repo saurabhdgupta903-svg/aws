@@ -121,7 +121,7 @@ async function fetchOSRMRoutes(
  * Sample route geometry every ~200m so thin hotspots on long intercity
  * highways are never skipped between sparse OSRM vertices.
  */
-function sampleRoutePoints(
+export function sampleRoutePoints(
   coordsLatLng: [number, number][],
   maxStepM = 200
 ): LatLng[] {

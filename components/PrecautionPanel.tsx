@@ -8,16 +8,21 @@ import {
   Waves,
   XCircle,
 } from "lucide-react";
-import { riskLevelLabel, type Translations } from "@/lib/i18n";
+import PrecautionChat from "@/components/PrecautionChat";
+import { riskLevelLabel, type Lang, type Translations } from "@/lib/i18n";
 import { RISK_COLORS, type RiskLevel } from "@/lib/risk";
 
 interface PrecautionPanelProps {
   cityLevel: RiskLevel;
+  cityName?: string;
+  lang: Lang;
   t: Translations;
 }
 
 export default function PrecautionPanel({
   cityLevel,
+  cityName,
+  lang,
   t,
 }: PrecautionPanelProps) {
   const dos = t.dosByRisk[cityLevel];
@@ -43,6 +48,9 @@ export default function PrecautionPanel({
         </div>
         <p className="text-xs text-slate-400">{t.currentRiskAdvice}</p>
       </div>
+
+      {/* AI Safety Assistant */}
+      <PrecautionChat cityLevel={cityLevel} cityName={cityName} lang={lang} />
 
       {/* Do's */}
       <div className="rounded-2xl bg-emerald-950/30 border border-emerald-500/30 p-4">

@@ -1,0 +1,31 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Report {
+  id           String   @id @default(cuid())
+  title        String?
+  type         String   @default("flood")
+  description  String
+  latitude     Float
+  longitude    Float
+  severity     String   @default("medium")
+  imageUrl     String?  @map("image_url")
+  photoKey     String?  @map("photo_key")
+  status       String   @default("active")
+  waterPresent Boolean  @default(false) @map("water_present")
+  verified     Boolean  @default(false)
+  demoMode     Boolean  @default(false) @map("demo_mode")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  @@index([latitude, longitude])
+  @@index([status, createdAt])
+  @@index([type])
+  @@map("reports")
+}

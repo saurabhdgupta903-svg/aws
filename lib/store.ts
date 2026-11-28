@@ -1,67 +1,45 @@
-import { haversineMeters } from "./geo";
 import type { RiskLevel } from "./risk";
 
 export interface FloodReport {
   id: string;
+  title?: string | null;
+  type?: string;
+  description?: string;
   lat: number;
   lng: number;
+  latitude?: number;
+  longitude?: number;
   photoKey?: string;
-  photoUrl?: string; // Presigned S3 GET URL
+  photoUrl?: string; // Presigned S3 GET URL or public image URL
+  imageUrl?: string | null;
   thumbnail?: string; // Fallback thumbnail for local/offline mode
   waterPresent: boolean;
   severity: RiskLevel;
   reason: string;
+  status?: "active" | "resolved";
   verified: boolean;
   demoMode?: boolean;
   createdAt: string;
+  updatedAt?: string;
 }
 
-const OFFLINE_CACHE_KEY = "floodloop_reports_cache_v3";
-const VERIFICATION_RADIUS_M = 300;
-const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000;
-
-export function recomputeVerifications(reports: FloodReport[]): FloodReport[] {
-  const cutoff = Date.now() - TWENTY_FOUR_HOURS_MS;
-  const active = reports.filter(
-    (r) => new Date(r.createdAt).getTime() >= cutoff
-  );
-
-  return active.map((report) => {
-    if (report.waterPresent) {
-      return { ...report, verified: true };
-    }
-    const nearbyCount = active.filter(
-      (other) =>
-        haversineMeters(
-          { lat: report.lat, lng: report.lng },
-          { lat: other.lat, lng: other.lng }
-        ) <= VERIFICATION_RADIUS_M
-    ).length;
-    return { ...report, verified: nearbyCount >= 2 };
-  });
+export interface FetchReportsParams {
+  limit?: number;
+  offset?: number;
+  type?: string;
+  status?: "active" | "resolved";
+  minLat?: number;
+  maxLat?: number;
+  minLng?: number;
+  maxLng?: number;
 }
 
-export function loadOfflineReports(): FloodReport[] {
-  if (typeof window === "undefined") return [];
-  try {
-    const raw = window.localStorage.getItem(OFFLINE_CACHE_KEY);
-    if (!raw) return [];
-    return recomputeVerifications(JSON.parse(raw) as FloodReport[]);
-  } catch {
-    return [];
-  }
-}
-
-export function saveOfflineReports(reports: FloodReport[]): void {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(
-      OFFLINE_CACHE_KEY,
-      JSON.stringify(reports.slice(0, 200))
-    );
-  } catch {
-    // Ignore storage quota errors
-  }
+export interface FetchReportsResponse {
+  reports: FloodReport[];
+  total: number;
+  limit: number;
+  offset: number;
+  hasMore: boolean;
 }
 
 export async function uploadPhotoToS3(file: File): Promise<string | null> {
@@ -96,44 +74,69 @@ export async function uploadPhotoToS3(file: File): Promise<string | null> {
   }
 }
 
-export async function fetchSharedReports(): Promise<FloodReport[]> {
-  try {
-    const res = await fetch("/api/reports", { cache: "no-store" });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = (await res.json()) as { reports: FloodReport[] };
-    const verified = recomputeVerifications(data.reports ?? []);
-    saveOfflineReports(verified);
-    return verified;
-  } catch {
-    return loadOfflineReports();
+export async function fetchSharedReports(
+  params: FetchReportsParams = {}
+): Promise<FetchReportsResponse> {
+  const qs = new URLSearchParams();
+  if (params.limit !== undefined) qs.set("limit", String(params.limit));
+  if (params.offset !== undefined) qs.set("offset", String(params.offset));
+  if (params.type) qs.set("type", params.type);
+  if (params.status) qs.set("status", params.status);
+  if (
+    params.minLat !== undefined &&
+    params.maxLat !== undefined &&
+    params.minLng !== undefined &&
+    params.maxLng !== undefined
+  ) {
+    qs.set("min_lat", String(params.minLat));
+    qs.set("max_lat", String(params.maxLat));
+    qs.set("min_lng", String(params.minLng));
+    qs.set("max_lng", String(params.maxLng));
   }
+
+  const query = qs.toString();
+  const res = await fetch(`/api/reports${query ? `?${query}` : ""}`, {
+    cache: "no-store",
+  });
+  const data = (await res.json()) as FetchReportsResponse & { error?: string };
+  if (!res.ok) {
+    throw new Error(data.error || `Failed to load reports (HTTP ${res.status})`);
+  }
+  return {
+    reports: data.reports ?? [],
+    total: data.total ?? (data.reports?.length ?? 0),
+    limit: data.limit ?? (params.limit ?? 20),
+    offset: data.offset ?? (params.offset ?? 0),
+    hasMore: Boolean(data.hasMore),
+  };
 }
 
 export async function postSharedReport(
   report: Omit<FloodReport, "id" | "createdAt" | "verified">
-): Promise<FloodReport[]> {
-  try {
-    const res = await fetch("/api/reports", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(report),
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = (await res.json()) as { reports: FloodReport[] };
-    const verified = recomputeVerifications(data.reports ?? []);
-    saveOfflineReports(verified);
-    return verified;
-  } catch {
-    const local: FloodReport = {
-      ...report,
-      id: `local-${Date.now()}`,
-      verified: report.waterPresent,
-      createdAt: new Date().toISOString(),
-    };
-    const next = recomputeVerifications([local, ...loadOfflineReports()]);
-    saveOfflineReports(next);
-    return next;
+): Promise<FloodReport> {
+  const res = await fetch("/api/reports", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      title: report.title,
+      type: report.type ?? "flood",
+      description: report.description ?? report.reason,
+      reason: report.reason,
+      latitude: report.latitude ?? report.lat,
+      longitude: report.longitude ?? report.lng,
+      severity: report.severity,
+      photoKey: report.photoKey,
+      thumbnail: report.thumbnail,
+      imageUrl: report.imageUrl,
+      waterPresent: report.waterPresent,
+      demoMode: report.demoMode,
+    }),
+  });
+  const data = (await res.json()) as { report?: FloodReport; error?: string };
+  if (!res.ok || !data.report) {
+    throw new Error(data.error || `Failed to save report (HTTP ${res.status})`);
   }
+  return data.report;
 }
 
 /**

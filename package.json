@@ -6,7 +6,13 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test": "tsc -p tsconfig.test.json && node node_modules/.cache/test-dist/tests/safeRoutes.test.js && node node_modules/.cache/test-dist/tests/reports.test.js && node node_modules/.cache/test-dist/tests/chat.test.js",
+    "db:migrate": "prisma migrate deploy",
+    "db:seed": "prisma db seed"
+  },
+  "prisma": {
+    "seed": "tsx prisma/seed.ts"
   },
   "dependencies": {
     "@aws-sdk/client-bedrock-runtime": "^3.1178.0",
@@ -16,6 +22,7 @@
     "@aws-sdk/client-sns": "^3.1178.0",
     "@aws-sdk/lib-dynamodb": "^3.1178.0",
     "@aws-sdk/s3-request-presigner": "^3.1178.0",
+    "@prisma/client": "^6.19.3",
     "@types/leaflet": "^1.9.23",
     "leaflet": "^1.9.4",
     "lucide-react": "^1.80.0",
@@ -32,7 +39,9 @@
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.4.6",
+    "prisma": "^6.19.3",
     "tailwindcss": "4.3.3",
+    "tsx": "^4.23.15",
     "typescript": "^5"
   }
 }
