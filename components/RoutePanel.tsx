@@ -51,20 +51,20 @@ export default function RoutePanel({
   t,
 }: RoutePanelProps) {
   const [query, setQuery] = useState(destLabel);
+  const [prevDestLabel, setPrevDestLabel] = useState(destLabel);
+  if (destLabel !== prevDestLabel) {
+    setPrevDestLabel(destLabel);
+    setQuery(destLabel);
+  }
   const [suggestions, setSuggestions] = useState<PlaceResult[]>([]);
   const [searching, setSearching] = useState(false);
   const [routing, setRouting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  useEffect(() => {
-    setQuery(destLabel);
-  }, [destLabel]);
-
   // Debounced Maharashtra place search (600ms)
   useEffect(() => {
     const trimmed = query.trim();
     if (trimmed.length < 2 || trimmed === destLabel) {
-      setSuggestions([]);
       return;
     }
 

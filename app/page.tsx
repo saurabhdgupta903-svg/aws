@@ -37,14 +37,13 @@ type ActiveTab = "risk" | "report" | "route" | "precautions";
 
 export default function HomePage() {
   // ── Language (auto-detect from browser) ────────────────────────────────
-  const [lang, setLang] = useState<Lang>("mr");
-  useEffect(() => {
-    if (typeof navigator === "undefined") return;
+  const [lang, setLang] = useState<Lang>(() => {
+    if (typeof navigator === "undefined") return "mr";
     const nav = navigator.language?.toLowerCase() ?? "";
-    if (nav.startsWith("hi")) setLang("hi");
-    else if (nav.startsWith("mr") || nav.startsWith("ma")) setLang("mr");
-    else setLang("en");
-  }, []);
+    if (nav.startsWith("hi")) return "hi";
+    if (nav.startsWith("mr") || nav.startsWith("ma")) return "mr";
+    return "en";
+  });
   const t = I18N[lang];
 
   // ── Tab & UI state ──────────────────────────────────────────────────────
@@ -71,11 +70,10 @@ export default function HomePage() {
   const [weatherError, setWeatherError] = useState<string | null>(null);
 
   const loadWeather = useCallback(async () => {
-    setWeatherLoading(true);
-    setWeatherError(null);
     try {
       const data = await fetchWeatherForHotspots();
       setWeatherMap(data);
+      setWeatherError(null);
     } catch (err) {
       setWeatherError(err instanceof Error ? err.message : "Weather fetch failed");
       // Build fallback map if empty
@@ -90,31 +88,80 @@ export default function HomePage() {
     }
   }, []);
 
-  useEffect(() => { loadWeather(); }, [loadWeather]);
-
-  // ── Reports (localStorage hydration + 30s polling) ──────────────────────
-  const [reports, setReports] = useState<FloodReport[]>([]);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
   useEffect(() => {
-    // Load from offline cache immediately (avoids hydration mismatch)
-    setReports(loadOfflineReports());
-    // Then fetch shared server reports
-    fetchSharedReports().then(setReports).catch(() => {});
-    // Poll every 30s for cross-tab shared reports
-    pollRef.current = setInterval(() => {
-      fetchSharedReports().then(setReports).catch(() => {});
-    }, 30000);
-    return () => { if (pollRef.current) clearInterval(pollRef.current); };
+    let active = true;
+    fetchWeatherForHotspots()
+      .then((data) => {
+        if (!active) return;
+        setWeatherMap(data);
+        setWeatherError(null);
+      })
+      .catch((err) => {
+        if (!active) return;
+        setWeatherError(err instanceof Error ? err.message : "Weather fetch failed");
+        setWeatherMap((prev) => {
+          if (Object.keys(prev).length > 0) return prev;
+          const fallback: Record<string, WeatherSnapshot> = {};
+          SEEDED_HOTSPOTS.forEach((hs) => { fallback[hs.id] = createFallbackWeather(); });
+          return fallback;
+        });
+      })
+      .finally(() => {
+        if (active) setWeatherLoading(false);
+      });
+    return () => { active = false; };
   }, []);
 
-  // ── GPS location ────────────────────────────────────────────────────────
-  const [userLocation, setUserLocation] = useState<LatLng | null>(null);
-  useEffect(() => {
-    if (typeof navigator === "undefined" || !navigator.geolocation) {
-      setUserLocation({ lat: 19.076, lng: 72.8777 });
-      return;
+  // ── Reports (DB API + 30s polling) ──────────────────────────────────────
+  const [reports, setReports] = useState<FloodReport[]>(() => loadOfflineReports());
+  const [reportsLoading, setReportsLoading] = useState(true);
+  const [reportsError, setReportsError] = useState<string | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const refreshReports = useCallback(async () => {
+    try {
+      const data = await fetchSharedReports();
+      setReports(data);
+      setReportsError(null);
+    } catch (err) {
+      setReportsError(err instanceof Error ? err.message : "Unable to load reports.");
+    } finally {
+      setReportsLoading(false);
     }
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    fetchSharedReports()
+      .then((data) => {
+        if (!active) return;
+        setReports(data);
+        setReportsError(null);
+      })
+      .catch((err) => {
+        if (!active) return;
+        setReportsError(err instanceof Error ? err.message : "Unable to load reports.");
+      })
+      .finally(() => {
+        if (active) setReportsLoading(false);
+      });
+    pollRef.current = setInterval(() => {
+      void refreshReports();
+    }, 30000);
+    return () => {
+      active = false;
+      if (pollRef.current) clearInterval(pollRef.current);
+    };
+  }, [refreshReports]);
+
+  // ── GPS location ────────────────────────────────────────────────────────
+  const [userLocation, setUserLocation] = useState<LatLng | null>(() =>
+    typeof navigator === "undefined" || !navigator.geolocation
+      ? { lat: 19.076, lng: 72.8777 }
+      : null
+  );
+  useEffect(() => {
+    if (typeof navigator === "undefined" || !navigator.geolocation) return;
     navigator.geolocation.getCurrentPosition(
       (pos) => setUserLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
       () => setUserLocation({ lat: 19.076, lng: 72.8777 }),
@@ -327,6 +374,9 @@ export default function HomePage() {
                 onStartPickOnMap={() => setMapPickMode(mapPickMode === "report" ? null : "report")}
                 onUseGps={() => { setReportPin(null); setMapPickMode(null); }}
                 reports={reports}
+                reportsLoading={reportsLoading}
+                reportsError={reportsError}
+                onRefreshReports={() => { void refreshReports(); }}
                 onReportsUpdated={setReports}
                 t={t}
               />

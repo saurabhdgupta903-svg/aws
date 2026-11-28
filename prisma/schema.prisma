@@ -1,0 +1,27 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Report {
+  id           String   @id @default(cuid())
+  type         String   @default("waterlogging")
+  description  String
+  latitude     Float
+  longitude    Float
+  severity     String   @default("medium")
+  imageUrl     String?
+  status       String   @default("active")
+  waterPresent Boolean  @default(true)
+  verified     Boolean  @default(false)
+  demoMode     Boolean  @default(false)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([latitude, longitude])
+  @@index([status, createdAt])
+}

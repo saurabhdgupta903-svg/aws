@@ -259,19 +259,30 @@ export default function MapView({
               )}
               <Marker position={[rep.lat, rep.lng]} icon={pinIcons[rep.severity]}>
                 <Popup>
-                  <div className="text-xs space-y-1.5 max-w-[180px]">
-                    {(rep.photoUrl || rep.thumbnail) && (
+                  <div className="text-xs space-y-1.5 max-w-[200px]">
+                    {(rep.photoUrl || rep.thumbnail || rep.imageUrl) && (
                       <img
-                        src={rep.photoUrl || rep.thumbnail}
+                        src={rep.photoUrl || rep.thumbnail || rep.imageUrl || undefined}
                         alt="Reported waterlogging"
                         className="w-full h-24 object-cover rounded-md border border-slate-300"
                       />
                     )}
                     <p className="font-bold text-slate-900">
-                      {riskLevelLabel(rep.severity, t)} · {rep.verified ? t.verifiedBadge : t.unverifiedBadge}
+                      {riskLevelLabel(rep.severity, t)} ·{" "}
+                      {(rep.type || "waterlogging").replace("_", " ")}
                     </p>
-                    <p className="text-[11px] text-slate-700">{rep.reason}</p>
-                    <p className="text-[10px] text-slate-500">{t.reportZoneLabel}</p>
+                    <p className="text-[11px] text-slate-700">
+                      {rep.description || rep.reason}
+                    </p>
+                    <p className="text-[10px] text-slate-500">
+                      {rep.status === "resolved" ? "Resolved" : "Active"} ·{" "}
+                      {new Date(rep.createdAt).toLocaleString([], {
+                        month: "short",
+                        day: "numeric",
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })}
+                    </p>
                   </div>
                 </Popup>
               </Marker>

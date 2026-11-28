@@ -3,6 +3,10 @@ import type { RiskLevel } from "./risk";
 
 export interface FloodReport {
   id: string;
+  type?: string;
+  description?: string;
+  status?: "active" | "resolved";
+  imageUrl?: string | null;
   lat: number;
   lng: number;
   photoKey?: string;
@@ -97,43 +101,38 @@ export async function uploadPhotoToS3(file: File): Promise<string | null> {
 }
 
 export async function fetchSharedReports(): Promise<FloodReport[]> {
-  try {
-    const res = await fetch("/api/reports", { cache: "no-store" });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = (await res.json()) as { reports: FloodReport[] };
-    const verified = recomputeVerifications(data.reports ?? []);
-    saveOfflineReports(verified);
-    return verified;
-  } catch {
-    return loadOfflineReports();
-  }
+  const res = await fetch("/api/reports?limit=50", { cache: "no-store" });
+  if (!res.ok) throw new Error(`Failed to load reports (${res.status})`);
+  const data = (await res.json()) as { reports: FloodReport[] };
+  const reports = data.reports ?? [];
+  saveOfflineReports(reports);
+  return reports;
 }
 
 export async function postSharedReport(
   report: Omit<FloodReport, "id" | "createdAt" | "verified">
 ): Promise<FloodReport[]> {
-  try {
-    const res = await fetch("/api/reports", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(report),
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = (await res.json()) as { reports: FloodReport[] };
-    const verified = recomputeVerifications(data.reports ?? []);
-    saveOfflineReports(verified);
-    return verified;
-  } catch {
-    const local: FloodReport = {
-      ...report,
-      id: `local-${Date.now()}`,
-      verified: report.waterPresent,
-      createdAt: new Date().toISOString(),
-    };
-    const next = recomputeVerifications([local, ...loadOfflineReports()]);
-    saveOfflineReports(next);
-    return next;
+  const res = await fetch("/api/reports", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      type: report.type ?? "waterlogging",
+      description: report.description ?? report.reason,
+      latitude: report.lat,
+      longitude: report.lng,
+      severity: report.severity,
+      imageUrl: report.photoKey ?? report.thumbnail ?? report.imageUrl ?? null,
+      waterPresent: report.waterPresent,
+      demoMode: report.demoMode,
+    }),
+  });
+  const data = (await res.json()) as { reports?: FloodReport[]; error?: string };
+  if (!res.ok) {
+    throw new Error(data.error || `HTTP ${res.status}`);
   }
+  const reports = data.reports ?? [];
+  saveOfflineReports(reports);
+  return reports;
 }
 
 /**

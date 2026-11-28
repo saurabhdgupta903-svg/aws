@@ -7,6 +7,8 @@ import {
   Loader2,
   MapPin,
   Navigation,
+  RefreshCw,
+  Send,
   Sparkles,
 } from "lucide-react";
 import { riskLevelLabel, type Translations } from "@/lib/i18n";
@@ -26,9 +28,22 @@ interface ReportPanelProps {
   onStartPickOnMap: () => void;
   onUseGps: () => void;
   reports: FloodReport[];
+  reportsLoading?: boolean;
+  reportsError?: string | null;
+  onRefreshReports?: () => void;
   onReportsUpdated: (reports: FloodReport[]) => void;
   t: Translations;
 }
+
+const REPORT_TYPES = [
+  { value: "waterlogging", label: "Waterlogging" },
+  { value: "river_flood", label: "River Flood" },
+  { value: "landslide", label: "Landslide" },
+  { value: "road_block", label: "Road Block" },
+  { value: "other", label: "Other" },
+] as const;
+
+const SEVERITIES: RiskLevel[] = ["low", "medium", "high", "severe"];
 
 export default function ReportPanel({
   userLocation,
@@ -37,10 +52,16 @@ export default function ReportPanel({
   onStartPickOnMap,
   onUseGps,
   reports,
+  reportsLoading = false,
+  reportsError = null,
+  onRefreshReports,
   onReportsUpdated,
   t,
 }: ReportPanelProps) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [reportType, setReportType] = useState<string>("waterlogging");
+  const [severity, setSeverity] = useState<RiskLevel>("medium");
+  const [description, setDescription] = useState<string>("");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -63,41 +84,60 @@ export default function ReportPanel({
     }
   };
 
-  const handleSubmit = async () => {
-    if (!selectedFile || !previewUrl) return;
+  const canSubmit = !submitting && (Boolean(selectedFile) || description.trim().length > 0);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!canSubmit) return;
     setSubmitting(true);
     setErrorMsg(null);
 
     try {
-      const formData = new FormData();
-      formData.append("image", selectedFile);
+      let finalSeverity: RiskLevel = severity;
+      let finalReason = description.trim();
+      let waterPresent = true;
+      let demoMode = false;
+      let photoKey: string | undefined;
+      let thumbnail: string | undefined;
 
-      const res = await fetch("/api/analyze", { method: "POST", body: formData });
-      if (!res.ok) throw new Error(`Analysis failed (${res.status})`);
+      if (selectedFile && previewUrl) {
+        const formData = new FormData();
+        formData.append("image", selectedFile);
 
-      const data = (await res.json()) as {
-        waterPresent: boolean;
-        severity: RiskLevel;
-        reason: string;
-        demoMode?: boolean;
-      };
+        const res = await fetch("/api/analyze", { method: "POST", body: formData });
+        if (!res.ok) throw new Error(`Analysis failed (${res.status})`);
 
-      const photoKey = await uploadPhotoToS3(selectedFile);
+        const data = (await res.json()) as {
+          waterPresent: boolean;
+          severity: RiskLevel;
+          reason: string;
+          demoMode?: boolean;
+        };
+
+        finalSeverity = data.severity;
+        finalReason = finalReason || data.reason;
+        waterPresent = data.waterPresent;
+        demoMode = Boolean(data.demoMode);
+        photoKey = (await uploadPhotoToS3(selectedFile)) ?? undefined;
+        thumbnail = photoKey ? undefined : previewUrl;
+      }
 
       const updated = await postSharedReport({
+        type: reportType,
+        description: finalReason,
         lat: activeCoords.lat,
         lng: activeCoords.lng,
-        photoKey: photoKey ?? undefined,
-        thumbnail: photoKey ? undefined : previewUrl,
-        waterPresent: data.waterPresent,
-        severity: data.severity,
-        reason: data.reason,
-        demoMode: Boolean(data.demoMode),
+        photoKey,
+        thumbnail,
+        waterPresent,
+        severity: finalSeverity,
+        reason: finalReason,
+        demoMode,
       });
 
       onReportsUpdated(updated);
-      const newest = updated[0];
-      setLastResult(newest ?? null);
+      setLastResult(updated[0] ?? null);
+      setDescription("");
       setSelectedFile(null);
       setPreviewUrl(null);
       if (fileInputRef.current) fileInputRef.current.value = "";
@@ -110,17 +150,74 @@ export default function ReportPanel({
 
   return (
     <div className="space-y-4">
-      <div className="rounded-2xl bg-slate-900/80 border border-slate-800 p-4 space-y-3">
+      <form
+        onSubmit={handleSubmit}
+        className="rounded-2xl bg-slate-900/80 border border-slate-800 p-4 space-y-3"
+      >
         <div>
           <h2 className="text-base font-semibold text-white">{t.reportTitle}</h2>
           <p className="text-xs text-slate-400 mt-0.5">{t.reportSubtitle}</p>
         </div>
 
-        {/* Photo Capture / Upload */}
+        {/* Category & Severity */}
+        <div className="grid grid-cols-2 gap-2">
+          <div>
+            <label htmlFor="report-type" className="block text-[11px] font-medium text-slate-400 mb-1">
+              Type
+            </label>
+            <select
+              id="report-type"
+              value={reportType}
+              onChange={(e) => setReportType(e.target.value)}
+              className="w-full rounded-xl bg-slate-800/90 border border-slate-700 px-2.5 py-2 text-xs text-white focus:border-cyan-400 focus:outline-none"
+            >
+              {REPORT_TYPES.map((rt) => (
+                <option key={rt.value} value={rt.value}>
+                  {rt.label}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label htmlFor="report-severity" className="block text-[11px] font-medium text-slate-400 mb-1">
+              Severity
+            </label>
+            <select
+              id="report-severity"
+              value={severity}
+              onChange={(e) => setSeverity(e.target.value as RiskLevel)}
+              className="w-full rounded-xl bg-slate-800/90 border border-slate-700 px-2.5 py-2 text-xs text-white focus:border-cyan-400 focus:outline-none"
+            >
+              {SEVERITIES.map((sev) => (
+                <option key={sev} value={sev}>
+                  {riskLevelLabel(sev, t)}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        {/* Description */}
+        <div>
+          <label htmlFor="report-desc" className="block text-[11px] font-medium text-slate-400 mb-1">
+            Description (required if no photo)
+          </label>
+          <textarea
+            id="report-desc"
+            rows={2}
+            maxLength={500}
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            placeholder="Describe water depth, road condition, or landmark..."
+            className="w-full rounded-xl bg-slate-800/90 border border-slate-700 focus:border-cyan-400 focus:outline-none px-3 py-2 text-xs text-white placeholder:text-slate-500 resize-none"
+          />
+        </div>
+
+        {/* Optional Photo Capture / Upload */}
         <input
           ref={fileInputRef}
           type="file"
-          accept="image/*"
+          accept="image/jpeg,image/png,image/webp"
           capture="environment"
           onChange={handleFileChange}
           className="hidden"
@@ -128,22 +225,32 @@ export default function ReportPanel({
         />
         <label
           htmlFor="flood-photo-input"
-          className="flex items-center justify-center gap-2.5 w-full py-3.5 px-4 rounded-xl border-2 border-dashed border-cyan-500/40 bg-cyan-950/20 hover:bg-cyan-950/35 text-cyan-200 font-semibold text-sm cursor-pointer transition-colors"
+          className="flex items-center justify-center gap-2 w-full py-2.5 px-3 rounded-xl border border-dashed border-cyan-500/40 bg-cyan-950/20 hover:bg-cyan-950/35 text-cyan-200 font-semibold text-xs cursor-pointer transition-colors"
         >
-          <Camera className="w-5 h-5 text-cyan-400" />
-          {t.takeOrUploadPhoto}
+          <Camera className="w-4 h-4 text-cyan-400" />
+          {t.takeOrUploadPhoto} (Optional)
         </label>
 
         {previewUrl && (
-          <div className="flex items-center gap-3 p-2.5 rounded-xl bg-slate-800/70 border border-slate-700">
+          <div className="flex items-center gap-3 p-2 rounded-xl bg-slate-800/70 border border-slate-700">
             <img
               src={previewUrl}
               alt="Flood preview"
-              className="w-16 h-16 rounded-lg object-cover shrink-0 border border-slate-600"
+              className="w-14 h-14 rounded-lg object-cover shrink-0 border border-slate-600"
             />
             <div className="min-w-0 flex-1">
               <p className="text-xs font-medium text-white truncate">{selectedFile?.name}</p>
-              <p className="text-[11px] text-slate-400">~150px thumbnail ready</p>
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedFile(null);
+                  setPreviewUrl(null);
+                  if (fileInputRef.current) fileInputRef.current.value = "";
+                }}
+                className="text-[11px] text-red-300 hover:underline mt-0.5"
+              >
+                Remove photo
+              </button>
             </div>
           </div>
         )}
@@ -189,20 +296,24 @@ export default function ReportPanel({
         </div>
 
         <button
-          type="button"
-          disabled={!selectedFile || submitting}
-          onClick={handleSubmit}
-          className="w-full py-3.5 px-4 rounded-xl bg-cyan-500 hover:bg-cyan-400 disabled:bg-slate-800 disabled:text-slate-500 text-slate-950 font-bold text-sm flex items-center justify-center gap-2 transition-colors"
+          type="submit"
+          disabled={!canSubmit}
+          className="w-full py-3 px-4 rounded-xl bg-cyan-500 hover:bg-cyan-400 disabled:bg-slate-800 disabled:text-slate-500 text-slate-950 font-bold text-sm flex items-center justify-center gap-2 transition-colors"
         >
           {submitting ? (
             <>
               <Loader2 className="w-4 h-4 animate-spin" />
-              {t.analyzingPhoto}
+              {selectedFile ? t.analyzingPhoto : "Submitting..."}
             </>
-          ) : (
+          ) : selectedFile ? (
             <>
               <Sparkles className="w-4 h-4" />
               {t.analyzeAndSubmit}
+            </>
+          ) : (
+            <>
+              <Send className="w-4 h-4" />
+              Submit Public Report
             </>
           )}
         </button>
@@ -228,17 +339,43 @@ export default function ReportPanel({
                 </span>
               )}
             </div>
-            <p className="text-xs text-slate-200">{lastResult.reason}</p>
+            <p className="text-xs text-slate-200">{lastResult.description || lastResult.reason}</p>
           </div>
         )}
-      </div>
+      </form>
 
       {/* Shared Community Reports */}
       <div className="rounded-2xl bg-slate-900/80 border border-slate-800 p-4">
-        <h3 className="text-xs font-semibold text-slate-300 mb-3">
-          {t.recentReports} ({reports.length})
-        </h3>
-        {reports.length === 0 ? (
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-xs font-semibold text-slate-300">
+            {t.recentReports} ({reports.length})
+          </h3>
+          {onRefreshReports && (
+            <button
+              type="button"
+              onClick={onRefreshReports}
+              disabled={reportsLoading}
+              className="inline-flex items-center gap-1 text-[11px] text-cyan-300 hover:text-cyan-200 disabled:opacity-50"
+              aria-label="Refresh reports"
+            >
+              <RefreshCw className={`w-3 h-3 ${reportsLoading ? "animate-spin" : ""}`} />
+              Refresh
+            </button>
+          )}
+        </div>
+
+        {reportsError && (
+          <div className="mb-2 text-xs text-red-300 bg-red-950/40 border border-red-500/30 rounded-xl px-3 py-2">
+            {reportsError}
+          </div>
+        )}
+
+        {reportsLoading && reports.length === 0 ? (
+          <div className="flex items-center gap-2 text-xs text-slate-400 py-4 justify-center">
+            <Loader2 className="w-4 h-4 animate-spin text-cyan-400" />
+            Loading community reports...
+          </div>
+        ) : reports.length === 0 ? (
           <p className="text-xs text-slate-500">{t.noReportsYet}</p>
         ) : (
           <div className="space-y-2.5 max-h-64 overflow-y-auto pr-1">
@@ -247,9 +384,9 @@ export default function ReportPanel({
                 key={rep.id}
                 className="flex items-start gap-3 rounded-xl bg-slate-800/70 border border-slate-700/60 p-2.5"
               >
-                {rep.photoUrl || rep.thumbnail ? (
+                {rep.photoUrl || rep.thumbnail || rep.imageUrl ? (
                   <img
-                    src={rep.photoUrl || rep.thumbnail}
+                    src={rep.photoUrl || rep.thumbnail || rep.imageUrl || undefined}
                     alt="Flood report"
                     className="w-12 h-12 rounded-lg object-cover shrink-0 border border-slate-600"
                   />
@@ -266,23 +403,27 @@ export default function ReportPanel({
                     >
                       {riskLevelLabel(rep.severity, t)}
                     </span>
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-700/80 text-slate-300 capitalize">
+                      {(rep.type || "waterlogging").replace("_", " ")}
+                    </span>
                     <span
                       className={`text-[10px] font-medium inline-flex items-center gap-1 ${
                         rep.verified ? "text-emerald-300" : "text-amber-300"
                       }`}
                     >
                       {rep.verified && <CheckCircle2 className="w-3 h-3" />}
-                      {rep.verified ? t.verifiedBadge : t.unverifiedBadge}
+                      {rep.status === "resolved" ? "Resolved" : rep.verified ? t.verifiedBadge : t.unverifiedBadge}
                     </span>
-                    {rep.demoMode && (
-                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-700 text-slate-300">
-                        {t.demoModeLabel}
-                      </span>
-                    )}
                   </div>
-                  <p className="text-xs text-slate-200 mt-1 line-clamp-2">{rep.reason}</p>
+                  <p className="text-xs text-slate-200 mt-1 line-clamp-2">
+                    {rep.description || rep.reason}
+                  </p>
                   <p className="text-[10px] text-slate-500 mt-0.5">
-                    {rep.lat.toFixed(3)}, {rep.lng.toFixed(3)}
+                    {rep.lat.toFixed(3)}, {rep.lng.toFixed(3)} ·{" "}
+                    {new Date(rep.createdAt).toLocaleTimeString([], {
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    })}
                   </p>
                 </div>
               </div>
