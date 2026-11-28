@@ -97,6 +97,13 @@ export interface Translations {
   alertSubscribeBtn: string;
   alertSubscribing: string;
   alertErrorGeneric: string;
+  chatTitle: string;
+  chatSubtitle: string;
+  chatPlaceholder: string;
+  chatClear: string;
+  chatNote: string;
+  chatEmergencyBtn: string;
+  chatChips: string[];
 }
 
 export const I18N: Record<Lang, Translations> = {
@@ -235,6 +242,18 @@ export const I18N: Record<Lang, Translations> = {
     alertSubscribeBtn: "सबस्क्राइब",
     alertSubscribing: "पाठवत आहे...",
     alertErrorGeneric: "सबस्क्राइब करताना त्रुटी आली. कृपया पुन्हा प्रयत्न करा.",
+    chatTitle: "सुरक्षा सहाय्यकाला विचारा",
+    chatSubtitle: "FloodLoop खबरदारी मार्गदर्शनावर आधारित उत्तरे",
+    chatPlaceholder: "पूर, वाहन चालवणे किंवा आपत्कालीन किटबद्दल विचारा...",
+    chatClear: "चॅट साफ करा",
+    chatNote: "AI-निर्मित मार्गदर्शन. आपत्कालीन परिस्थितीत 112 वर कॉल करा.",
+    chatEmergencyBtn: "आताच 112 वर कॉल करा (आपत्कालीन)",
+    chatChips: [
+      "पुरादरम्यान मी काय करावे?",
+      "आपत्कालीन किटमध्ये काय असावे?",
+      "पाण्यातून वाहन चालवणे सुरक्षित आहे का?",
+      "घाट रस्ते कधी टाळावेत?",
+    ],
   },
   en: {
     appName: "FloodLoop AI",
@@ -371,6 +390,18 @@ export const I18N: Record<Lang, Translations> = {
     alertSubscribeBtn: "Subscribe",
     alertSubscribing: "Sending...",
     alertErrorGeneric: "Failed to subscribe. Please check your email and try again.",
+    chatTitle: "Ask Safety Assistant",
+    chatSubtitle: "Answers grounded in FloodLoop precaution guidance",
+    chatPlaceholder: "Ask about floods, driving, emergency kits...",
+    chatClear: "Clear chat",
+    chatNote: "AI-generated guidance. In an emergency, call 112.",
+    chatEmergencyBtn: "Call 112 Now (Emergency)",
+    chatChips: [
+      "What should I do during a flood?",
+      "What goes in an emergency kit?",
+      "Is it safe to drive through water?",
+      "When should I avoid ghat roads?",
+    ],
   },
   hi: {
     appName: "FloodLoop AI",
@@ -507,6 +538,18 @@ export const I18N: Record<Lang, Translations> = {
     alertSubscribeBtn: "सदस्यता लें",
     alertSubscribing: "भेजा जा रहा है...",
     alertErrorGeneric: "सदस्यता लेने में त्रुटि हुई। कृपया पुनः प्रयास करें।",
+    chatTitle: "सुरक्षा सहायक से पूछें",
+    chatSubtitle: "FloodLoop सावधानी मार्गदर्शन पर आधारित उत्तर",
+    chatPlaceholder: "बाढ़, ड्राइविंग या इमरजेंसी किट के बारे में पूछें...",
+    chatClear: "चैट साफ़ करें",
+    chatNote: "AI-जनित मार्गदर्शन। आपातकाल में 112 पर कॉल करें।",
+    chatEmergencyBtn: "अभी 112 पर कॉल करें (आपातकाल)",
+    chatChips: [
+      "बाढ़ के दौरान मुझे क्या करना चाहिए?",
+      "इमरजेंसी किट में क्या होना चाहिए?",
+      "क्या पानी से गाड़ी चलाना सुरक्षित है?",
+      "घाट सड़कों से कब बचना चाहिए?",
+    ],
   },
 };
 

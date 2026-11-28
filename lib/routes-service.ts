@@ -76,7 +76,7 @@ export const SAFETY_WEIGHTS = {
  */
 export function samplePointsAlongRoute(
   coords: [number, number][],
-  stepM = SAFETY_WEIGHTS.SAMPLE_STEP_M
+  stepM: number = SAFETY_WEIGHTS.SAMPLE_STEP_M
 ): LatLng[] {
   if (coords.length === 0) return [];
   const sampled: LatLng[] = [{ lat: coords[0][0], lng: coords[0][1] }];

@@ -75,9 +75,63 @@ flowchart LR
 | `/api/geocode` | Resolves places and coordinates. |
 | `/api/upload-url` | Generates private S3 presigned upload URLs. |
 | `/api/analyze` | Runs Bedrock or Rekognition image analysis. |
-| `/api/reports` | Creates and retrieves community flood reports. |
-| `/api/subscribe` | Registers an email for flood alerts. |
-| `/api/alert` | Publishes a high-severity notification. |
+| `/api/reports` | Creates (`201`) and retrieves paginated, filtered public flood reports (Prisma + SQLite/PostgreSQL). |
+| `/api/reports/[id]` | Fetches a single public report (`404` if missing). |
+| `/api/alerts/subscribe` | Registers an email + optional district/area and sends a confirmation link. |
+| `/api/alerts/confirm` | Confirms a subscription via token. |
+| `/api/alerts/unsubscribe` | Unsubscribes via token. |
+| `/api/routes` | Computes 2-3 de-duplicated vehicle-aware routes (`bike`, `car`, `bus`, `walk`) with 0-100 safety scores. |
+| `/api/chat` | Gemini-powered Safety Assistant grounded in FloodLoop precaution guidance. |
+
+## Database Setup (Prisma)
+
+Locally, FloodLoop uses SQLite (`DATABASE_URL="file:./dev.db"`). Because AWS Amplify Hosting has no persistent local disk, **production deployments must use a hosted PostgreSQL database** (Amazon RDS, Neon, or Supabase) by updating `provider = "postgresql"` in `prisma/schema.prisma` and setting `DATABASE_URL` in Amplify environment variables.
+
+```bash
+# Run migrations and generate Prisma Client
+npx prisma migrate dev
+npx prisma generate
+
+# Seed initial Maharashtra flood reports
+npx prisma db seed
+```
+
+## Email Alerts (SES / SMTP / Console)
+
+- Set `EMAIL_PROVIDER` to `ses`, `smtp`, or `console` (default for local dev).
+- In **AWS SES sandbox mode**, SES only sends emails to verified recipient addresses until you request production access.
+- When credentials are missing, emails (including confirmation and unsubscribe links) are logged to the server console.
+
+## AI Safety Chatbot Grounding & Customization
+
+- **Server-side only**: `LLM_PROVIDER=gemini`, `LLM_API_KEY` (Google AI Studio key starting with `AIza...`), and `LLM_MODEL` (e.g. `gemini-2.5-flash`).
+- **Grounding**: `lib/llm.ts` injects the Do's & Don'ts, river flood safety, ghat landslide safety, and emergency helplines from `lib/i18n.ts` into the Gemini `systemInstruction`, plus the user's current `riskLevel`.
+- **Editing the prompt & chips**: Edit `SAFETY_ASSISTANT_SYSTEM_PROMPT` in `lib/llm.ts` and `chatChips` in `lib/i18n.ts`.
+
+## Curl Examples
+
+```bash
+# Create a public report
+curl -X POST http://localhost:3000/api/reports \
+  -H "Content-Type: application/json" \
+  -d '{"type":"waterlogging","description":"Knee-deep water near Dadar TT","latitude":19.0178,"longitude":72.8478,"severity":"high"}'
+
+# List active reports
+curl "http://localhost:3000/api/reports?status=active&limit=10"
+
+# Subscribe to email alerts
+curl -X POST http://localhost:3000/api/alerts/subscribe \
+  -H "Content-Type: application/json" \
+  -d '{"email":"commuter@example.com","district":"Mumbai"}'
+
+# Get vehicle-aware safe routes
+curl "http://localhost:3000/api/routes?from=19.0178,72.8478&to=19.1197,72.8464&vehicle=bike"
+
+# Ask the Safety Assistant
+curl -X POST http://localhost:3000/api/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message":"Is it safe to drive through water?","history":[],"riskLevel":"high","language":"en"}'
+```
 
 ## Project Structure
 
@@ -146,6 +200,7 @@ npm run dev     # Start the development server
 npm run build   # Create an optimized production build
 npm run start   # Start the production server
 npm run lint    # Run ESLint
+npm test        # Run Vitest unit and API tests
 ```
 
 ## Contributing

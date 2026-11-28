@@ -400,7 +400,7 @@ export default function HomePage() {
             )}
 
             {activeTab === "precautions" && (
-              <PrecautionPanel cityLevel={focusedCityRisk.level} t={t} />
+              <PrecautionPanel cityLevel={focusedCityRisk.level} lang={lang} t={t} />
             )}
           </div>
         </aside>
