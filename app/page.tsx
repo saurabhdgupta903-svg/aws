@@ -9,7 +9,8 @@ import PrecautionPanel from "@/components/PrecautionPanel";
 import ReportPanel from "@/components/ReportPanel";
 import RiskPanel from "@/components/RiskPanel";
 import RoutePanel from "@/components/RoutePanel";
-import type { HazardZone, LatLng, RoutePlanResult } from "@/lib/geo";
+import type { LatLng } from "@/lib/geo";
+import type { SafeRoutesResponse } from "@/lib/safeRoutes";
 import { MAHARASHTRA_CITIES, SEEDED_HOTSPOTS, type CityQuickJump } from "@/lib/hotspots";
 import { I18N, type Lang } from "@/lib/i18n";
 import {
@@ -22,7 +23,7 @@ import {
   type SimulateRegionOption,
   type WeatherSnapshot,
 } from "@/lib/risk";
-import { fetchSharedReports, loadOfflineReports, type FloodReport } from "@/lib/store";
+import { fetchSharedReports, type FloodReport } from "@/lib/store";
 
 const MapView = dynamic(() => import("@/components/MapView"), {
   ssr: false,
@@ -92,20 +93,88 @@ export default function HomePage() {
 
   useEffect(() => { loadWeather(); }, [loadWeather]);
 
-  // ── Reports (localStorage hydration + 30s polling) ──────────────────────
+  // ── Reports (Database API + 30s polling) ────────────────────────────────
+  const REPORTS_PAGE_SIZE = 25;
   const [reports, setReports] = useState<FloodReport[]>([]);
+  const [reportsLoading, setReportsLoading] = useState(true);
+  const [reportsError, setReportsError] = useState<string | null>(null);
+  const [reportsTotal, setReportsTotal] = useState(0);
+  const [reportsHasMore, setReportsHasMore] = useState(false);
+  const [loadingMoreReports, setLoadingMoreReports] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  const loadReports = useCallback(async () => {
+    setReportsError(null);
+    try {
+      const page = await fetchSharedReports({ limit: REPORTS_PAGE_SIZE, offset: 0 });
+      setReports(page.reports);
+      setReportsTotal(page.total);
+      setReportsHasMore(page.hasMore);
+    } catch (err) {
+      setReportsError(
+        err instanceof Error ? err.message : "Failed to load public reports."
+      );
+    } finally {
+      setReportsLoading(false);
+    }
+  }, []);
+
+  const handleLoadMoreReports = useCallback(async () => {
+    if (loadingMoreReports || !reportsHasMore) return;
+    setLoadingMoreReports(true);
+    try {
+      const page = await fetchSharedReports({
+        limit: REPORTS_PAGE_SIZE,
+        offset: reports.length,
+      });
+      setReports((prev) => {
+        const seen = new Set(prev.map((r) => r.id));
+        const next = page.reports.filter((r) => !seen.has(r.id));
+        return [...prev, ...next];
+      });
+      setReportsTotal(page.total);
+      setReportsHasMore(page.hasMore);
+    } catch (err) {
+      setReportsError(
+        err instanceof Error ? err.message : "Failed to load more reports."
+      );
+    } finally {
+      setLoadingMoreReports(false);
+    }
+  }, [loadingMoreReports, reportsHasMore, reports.length]);
+
+  const handleReportCreated = useCallback((created: FloodReport) => {
+    setReports((prev) => [created, ...prev.filter((r) => r.id !== created.id)]);
+    setReportsTotal((tCount) => tCount + 1);
+  }, []);
+
   useEffect(() => {
-    // Load from offline cache immediately (avoids hydration mismatch)
-    setReports(loadOfflineReports());
-    // Then fetch shared server reports
-    fetchSharedReports().then(setReports).catch(() => {});
-    // Poll every 30s for cross-tab shared reports
-    pollRef.current = setInterval(() => {
-      fetchSharedReports().then(setReports).catch(() => {});
-    }, 30000);
-    return () => { if (pollRef.current) clearInterval(pollRef.current); };
+    let active = true;
+    const sync = () => {
+      fetchSharedReports({ limit: REPORTS_PAGE_SIZE, offset: 0 })
+        .then((page) => {
+          if (!active) return;
+          setReportsError(null);
+          setReports(page.reports);
+          setReportsTotal(page.total);
+          setReportsHasMore(page.hasMore);
+        })
+        .catch((err) => {
+          if (!active) return;
+          setReportsError(
+            err instanceof Error ? err.message : "Failed to load public reports."
+          );
+        })
+        .finally(() => {
+          if (active) setReportsLoading(false);
+        });
+    };
+    sync();
+    pollRef.current = setInterval(sync, 30000);
+    return () => {
+      active = false;
+      if (pollRef.current) clearInterval(pollRef.current);
+    };
   }, []);
 
   // ── GPS location ────────────────────────────────────────────────────────
@@ -169,7 +238,13 @@ export default function HomePage() {
   const [routeSource, setRouteSource] = useState<LatLng | null>(null);
   const [routeDest, setRouteDest] = useState<LatLng | null>(null);
   const [routeDestLabel, setRouteDestLabel] = useState("");
-  const [routeResult, setRouteResult] = useState<RoutePlanResult | null>(null);
+  const [routeResult, setRouteResult] = useState<SafeRoutesResponse | null>(null);
+  const [selectedRouteId, setSelectedRouteId] = useState<string | null>(null);
+
+  const handleRouteComputed = useCallback((result: SafeRoutesResponse | null) => {
+    setRouteResult(result);
+    setSelectedRouteId(result?.routes?.[0]?.id ?? null);
+  }, []);
 
   const handleMapClick = (coords: LatLng) => {
     if (mapPickMode === "report") { setReportPin(coords); setMapPickMode(null); }
@@ -180,31 +255,6 @@ export default function HomePage() {
       setMapPickMode(null);
     }
   };
-
-  // ── Hazard zones for routing ─────────────────────────────────────────────
-  const hazardZones: HazardZone[] = useMemo(() => {
-    const hotspotZones: HazardZone[] = hotspotRisks.map((hr) => ({
-      id: hr.hotspot.id,
-      name: hr.hotspot.name,
-      lat: hr.hotspot.lat,
-      lng: hr.hotspot.lng,
-      radiusM: hr.hotspot.radiusM,
-      severity: hr.level,
-      hazardType: hr.hotspot.hazardType,
-    }));
-    const reportZones: HazardZone[] = reports
-      .filter((r) => r.verified)
-      .map((r) => ({
-        id: r.id,
-        name: "Reported Flood Zone",
-        lat: r.lat,
-        lng: r.lng,
-        radiusM: 300,
-        severity: r.severity,
-        hazardType: "reported_flood" as const,
-      }));
-    return [...hotspotZones, ...reportZones];
-  }, [hotspotRisks, reports]);
 
   const tabs: Array<{ id: ActiveTab; label: string; icon: React.ReactNode }> = [
     { id: "risk", label: t.tabRisk, icon: <AlertTriangle className="w-4 h-4" /> },
@@ -265,7 +315,9 @@ export default function HomePage() {
             reportPin={reportPin}
             routeSource={routeSource ?? userLocation}
             routeDest={routeDest}
-            routeResult={routeResult}
+            safeRoutes={routeResult?.routes ?? null}
+            selectedRouteId={selectedRouteId}
+            onSelectRoute={setSelectedRouteId}
             mapPickMode={mapPickMode}
             flyTarget={flyTarget}
             currentZoom={currentZoom}
@@ -327,7 +379,15 @@ export default function HomePage() {
                 onStartPickOnMap={() => setMapPickMode(mapPickMode === "report" ? null : "report")}
                 onUseGps={() => { setReportPin(null); setMapPickMode(null); }}
                 reports={reports}
-                onReportsUpdated={setReports}
+                reportsLoading={reportsLoading}
+                reportsError={reportsError}
+                reportsTotal={reportsTotal}
+                reportsHasMore={reportsHasMore}
+                loadingMore={loadingMoreReports}
+                onRetryReports={loadReports}
+                onLoadMoreReports={handleLoadMoreReports}
+                onReportCreated={handleReportCreated}
+                onFocusReport={(rep) => setFlyTarget({ lat: rep.lat, lng: rep.lng, zoom: 14 })}
                 t={t}
               />
             )}
@@ -342,15 +402,21 @@ export default function HomePage() {
                 onChangeDest={(coords, label) => { setRouteDest(coords); setRouteDestLabel(label); }}
                 pickMode={mapPickMode === "source" || mapPickMode === "destination" ? mapPickMode : null}
                 onSetPickMode={(mode) => setMapPickMode(mode)}
-                hazardZones={hazardZones}
                 routeResult={routeResult}
-                onRouteComputed={setRouteResult}
+                onRouteComputed={handleRouteComputed}
+                selectedRouteId={selectedRouteId}
+                onSelectRoute={setSelectedRouteId}
                 t={t}
               />
             )}
 
             {activeTab === "precautions" && (
-              <PrecautionPanel cityLevel={focusedCityRisk.level} t={t} />
+              <PrecautionPanel
+                cityLevel={focusedCityRisk.level}
+                cityName={focusedCityName}
+                lang={lang}
+                t={t}
+              />
             )}
           </div>
         </aside>

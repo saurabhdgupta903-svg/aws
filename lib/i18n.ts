@@ -74,6 +74,14 @@ export interface Translations {
   avoidedCountLabel: string;
   allRoutesFloodedWarning: string;
   noRouteYet: string;
+  selectVehicle: string;
+  vehicleBike: string;
+  vehicleCar: string;
+  vehicleBus: string;
+  vehicleWalk: string;
+  safetyScoreLabel: string;
+  hazardsNearby: string;
+  busDisclaimer: string;
   precautionsTitle: string;
   currentRiskAdvice: string;
   dosTitle: string;
@@ -159,6 +167,14 @@ export const I18N: Record<Lang, Translations> = {
     allRoutesFloodedWarning:
       "इशारा: सर्व उपलब्ध मार्ग पूरग्रस्त भागातून जातात. सर्वात कमी धोक्याचा मार्ग दाखवला आहे.",
     noRouteYet: "सुरक्षित मार्ग पाहण्यासाठी गंतव्य टाका किंवा नकाशावर निवडा.",
+    selectVehicle: "वाहन निवडा",
+    vehicleBike: "बाइक",
+    vehicleCar: "कार",
+    vehicleBus: "बस",
+    vehicleWalk: "पायी",
+    safetyScoreLabel: "सुरक्षितता",
+    hazardsNearby: "जवळचे धोके",
+    busDisclaimer: "बस मार्गदर्शन कार प्रोफाइल वापरते — OSRM मध्ये बस/ट्रान्झिट मार्ग नाही.",
     precautionsTitle: "AI सुरक्षा खबरदारी",
     currentRiskAdvice: "सध्याच्या धोक्यासाठी सूचना",
     dosTitle: "काय करावे",
@@ -288,6 +304,14 @@ export const I18N: Record<Lang, Translations> = {
     allRoutesFloodedWarning:
       "Warning: All available routes pass through active hazard zones. Showing the least risky route.",
     noRouteYet: "Enter a destination or pick on map to compute a flood-safe route.",
+    selectVehicle: "Select Vehicle",
+    vehicleBike: "Bike",
+    vehicleCar: "Car",
+    vehicleBus: "Bus",
+    vehicleWalk: "Walk",
+    safetyScoreLabel: "Safety",
+    hazardsNearby: "hazards nearby",
+    busDisclaimer: "Bus routing uses the car profile — public OSRM has no dedicated bus/transit routing.",
     precautionsTitle: "AI Safety Precautions",
     currentRiskAdvice: "Guidance for current risk",
     dosTitle: "Do's",
@@ -417,6 +441,14 @@ export const I18N: Record<Lang, Translations> = {
     allRoutesFloodedWarning:
       "चेतावनी: सभी उपलब्ध मार्ग बाढ़ क्षेत्रों से गुजरते हैं। सबसे कम जोखिम वाला मार्ग दिखाया गया है।",
     noRouteYet: "सुरक्षित मार्ग देखने के लिए गंतव्य दर्ज करें या मैप पर चुनें।",
+    selectVehicle: "वाहन चुनें",
+    vehicleBike: "बाइक",
+    vehicleCar: "कार",
+    vehicleBus: "बस",
+    vehicleWalk: "पैदल",
+    safetyScoreLabel: "सुरक्षा",
+    hazardsNearby: "निकट खतरे",
+    busDisclaimer: "बस रूटिंग कार प्रोफ़ाइल का उपयोग करती है — OSRM में बस/ट्रांज़िट रूटिंग नहीं है।",
     precautionsTitle: "AI सुरक्षा सावधानियाँ",
     currentRiskAdvice: "वर्तमान जोखिम के लिए सलाह",
     dosTitle: "क्या करें",

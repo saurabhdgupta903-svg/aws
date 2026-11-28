@@ -75,9 +75,12 @@ flowchart LR
 | `/api/geocode` | Resolves places and coordinates. |
 | `/api/upload-url` | Generates private S3 presigned upload URLs. |
 | `/api/analyze` | Runs Bedrock or Rekognition image analysis. |
-| `/api/reports` | Creates and retrieves community flood reports. |
+| `/api/reports` | Creates (`POST`) and lists (`GET`) public community flood reports in SQLite/PostgreSQL via Prisma. |
+| `/api/reports/[id]` | Fetches a single public report by ID (`404` if not found). |
+| `/api/routes` | Computes 2–3 alternative routes ranked by vehicle-specific safety score (`0–100`). |
 | `/api/subscribe` | Registers an email for flood alerts. |
 | `/api/alert` | Publishes a high-severity notification. |
+| `/api/chat` | Answers safety questions grounded in the precaution guidance (`POST`). |
 
 ## Project Structure
 
@@ -101,24 +104,92 @@ public/       PWA manifest and application icons
 
 ```bash
 npm install
-cp .env.example .env.local
+cp .env.example .env
+npx prisma migrate deploy
+npx prisma db seed
 npm run dev
 ```
 
 Open [http://localhost:3000](http://localhost:3000).
 
+### Database Migrations & Seeding
+
+The app uses **Prisma** with SQLite by default (`DATABASE_URL="file:./dev.db"`).
+
+- **Apply migrations (creates/updates the database schema):**
+  ```bash
+  npx prisma migrate deploy
+  ```
+- **Seed sample public reports (or import from `data/reports.seed.json` / `SEED_REPORTS_FILE`):**
+  ```bash
+  npx prisma db seed
+  ```
+- **Switch to PostgreSQL / MySQL (e.g., AWS RDS):** Update `DATABASE_URL` in `.env`, set `provider = "postgresql"` (or `"mysql"`) in `prisma/schema.prisma`, and run `npx prisma migrate deploy`.
+
 ## Environment Variables
 
-Create `.env.local` for local development, or configure these values in AWS Amplify.
+Create `.env` (or `.env.local`) for local development, or configure these values in AWS Amplify.
 
 | Variable | Required | Description |
 |---|---|---|
+| `DATABASE_URL` | Yes | Database connection string (defaults to `file:./dev.db` for local SQLite). |
+| `ALLOWED_ORIGINS` | No | Comma-separated list of allowed CORS frontend origins (defaults to `http://localhost:3000`). |
 | `ANALYZE_PROVIDER` | No | `bedrock`, `rekognition`, or `mock`. Defaults to `mock`. |
 | `BEDROCK_MODEL_ID` | With Bedrock | Vision-capable Bedrock model ID. |
 | `AWS_REGION` | With AWS services | AWS region, such as `ap-south-1`. |
-| `DDB_TABLE` | No | DynamoDB report table name. |
+| `DDB_TABLE` | No | Legacy DynamoDB report table name (optional). |
 | `S3_BUCKET` | No | Private S3 bucket for uploaded photos. |
 | `SNS_TOPIC_ARN` | No | SNS topic ARN for email alerts. |
+| `OSRM_BASE_URL` | No | OSRM routing server base URL (defaults to `https://router.project-osrm.org`). |
+| `ROUTES_CACHE_TTL_MS` | No | In-memory route cache TTL in ms (defaults to `180000`, i.e., 3 minutes). |
+| `LLM_PROVIDER` | No | Precaution chatbot provider: `gemini` (default), `openai`, or `bedrock`. |
+| `LLM_API_KEY` | With Gemini/OpenAI | Server-only API key for the precaution chatbot (`gemini` or `openai`). Never expose to the browser. |
+| `LLM_MODEL` | No | Model ID (defaults to `gemini-2.5-flash` for Gemini, `gpt-4o-mini` for OpenAI, `amazon.nova-lite-v1:0` for Bedrock). |
+| `LLM_BASE_URL` | No | Optional custom base URL for OpenAI-compatible providers. |
+| `CHAT_RATE_LIMIT_MAX` | No | Max chat requests per IP per window (defaults to `15`). |
+| `CHAT_RATE_LIMIT_WINDOW_MS` | No | Chat rate-limit window in ms (defaults to `60000`). |
+
+### Precaution Safety Chatbot (`POST /api/chat`)
+
+The **Precautions** tab includes an AI safety assistant (`components/PrecautionChat.tsx`) backed by `POST /api/chat` (`app/api/chat/route.ts` and `lib/chatHandler.ts`).
+
+- **Setup:** Set `LLM_PROVIDER=gemini` (default) and `LLM_API_KEY` in `.env` (or `.env.local`), or set `LLM_PROVIDER=bedrock` to use AWS credentials.
+- **Content grounding:** `buildPrecautionKnowledge()` in `lib/precautionPrompt.ts` dynamically extracts all risk-level Do's/Don'ts, river flood advice, ghat landslide advice, and Maharashtra emergency contacts from `lib/i18n.ts` and injects them into the system prompt along with the currently selected city, risk level, and language.
+- **Editing the system prompt:** Update `PRECAUTION_SYSTEM_RULES` in `lib/precautionPrompt.ts`.
+- **Editing suggested questions:** Update `CHAT_COPY[lang].suggestions` in `components/PrecautionChat.tsx`.
+
+### Public Reports API (`POST /api/reports`, `GET /api/reports`, `GET /api/reports/{id}`)
+
+- **Create a report (`POST /api/reports`):**
+  ```bash
+  curl -X POST http://localhost:3000/api/reports \
+    -H "Content-Type: application/json" \
+    -d '{"title":"Sion Underpass","type":"waterlogging","description":"Knee-deep water near Sion Circle","latitude":19.0434,"longitude":72.8634,"severity":"high","waterPresent":true}'
+  ```
+- **List reports (`GET /api/reports`) with pagination & filters:**
+  ```bash
+  curl "http://localhost:3000/api/reports?limit=20&offset=0&status=active&type=waterlogging"
+  curl "http://localhost:3000/api/reports?min_lat=18.9&max_lat=19.2&min_lng=72.7&max_lng=73.0"
+  curl "http://localhost:3000/api/reports?lat=19.04&lng=72.86&radius_km=10"
+  ```
+- **Get a report by ID (`GET /api/reports/{id}`):**
+  ```bash
+  curl http://localhost:3000/api/reports/seed-rep-mumbai-sion
+  ```
+
+### Safe Route Suggestions API (`GET /api/routes`)
+
+Query 2–3 alternative routes ranked by safety for a specific vehicle (`bike`, `car`, `bus`, or `walk`):
+
+```bash
+curl "http://localhost:3000/api/routes?from=19.0178,72.8478&to=19.0728,72.8826&vehicle=bike"
+```
+
+- **Vehicle profiles:** `bike` → `cycling`, `car` → `driving`, `walk` → `foot`, `bus` → `driving` (public OSRM has no dedicated bus/transit profile; a disclaimer is returned in the response and UI).
+- **Safety Score (`0–100`, higher is safer):** Computed in `computeSafetyScore()` (`lib/safeRoutes.ts`):
+  1. **Hazard Proximity (60% weight):** Samples route geometry every ~75 m and counts active flood hotspots and verified community reports within 200 m, weighted by severity (`low: 0.25`, `medium: 0.50`, `high: 0.80`, `severe: 1.0`).
+  2. **Vehicle Road-Type Suitability (25% weight):** Uses OSRM step road names/refs and geometry (e.g., penalizes highways for `bike` and `walk`, penalizes narrow shortcuts and sharp turns for `bus`, prefers main roads for `car`).
+  3. **Route Complexity (15% weight):** Normalizes sharp turns (>45°) and road-name transitions per km.
 
 > Never commit AWS credentials or secrets. The application is designed to use an IAM role, service role, or standard AWS credential chain.
 
