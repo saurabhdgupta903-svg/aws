@@ -38,6 +38,29 @@ export interface RoutePlanResult {
   allFlooded: boolean;
   avoidedZonesCount: number;
   avoidanceMessage: string | null;
+  // Multi-route vehicle-aware fields (from /api/routes)
+  vehicleRoutes?: Array<{
+    id: string;
+    geometry: [number, number][];
+    distanceM: number;
+    durationS: number;
+    safetyScore: number;
+    hazardsOnRoute: {
+      count: number;
+      nearest: Array<{
+        id: string;
+        type: string;
+        severity: string;
+        description: string;
+        latitude: number;
+        longitude: number;
+        distanceM: number;
+      }>;
+    };
+    label: "Safest" | "Fastest" | "Balanced";
+    summary: string;
+  }>;
+  selectedVehicleRouteId?: string;
 }
 
 const EARTH_RADIUS_M = 6371000;

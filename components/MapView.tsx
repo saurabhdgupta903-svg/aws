@@ -297,26 +297,60 @@ export default function MapView({
         {routeSource && <Marker position={[routeSource.lat, routeSource.lng]} icon={pinIcons.src} />}
         {routeDest && <Marker position={[routeDest.lat, routeDest.lng]} icon={pinIcons.dst} />}
 
-        {/* Rejected Flooded Routes (dashed red) */}
-        {routeResult?.rejectedRoutes.map((route) => (
-          <Polyline
-            key={route.id}
-            positions={route.coordinates}
-            pathOptions={{ color: "#ef4444", weight: 4, opacity: 0.85, dashArray: "8, 8" }}
-          />
-        ))}
+        {/* Alternative Routes in distinct colors */}
+        {routeResult?.rejectedRoutes.map((route, idx) => {
+          const altColors = ["#f59e0b", "#8b5cf6", "#ec4899"];
+          return (
+            <Polyline
+              key={route.id}
+              positions={route.coordinates}
+              pathOptions={{
+                color: altColors[idx % altColors.length],
+                weight: 4,
+                opacity: 0.7,
+                dashArray: "6, 6",
+              }}
+            />
+          );
+        })}
 
-        {/* Safe Route (green, or orange if all flooded) */}
+        {/* Selected Safe Route */}
         {routeResult?.selectedRoute && (
           <Polyline
             positions={routeResult.selectedRoute.coordinates}
             pathOptions={{
               color: routeResult.allFlooded ? "#f97316" : "#22c55e",
-              weight: 5,
+              weight: 5.5,
               opacity: 0.95,
             }}
           />
         )}
+
+        {/* Hazard circles near selected vehicle route */}
+        {routeResult?.vehicleRoutes
+          ?.find((r) => r.id === routeResult.selectedVehicleRouteId)
+          ?.hazardsOnRoute.nearest.map((hz) => (
+            <Circle
+              key={`route-hz-${hz.id}`}
+              center={[hz.latitude, hz.longitude]}
+              radius={200}
+              pathOptions={{
+                color: "#ef4444",
+                fillColor: "#ef4444",
+                fillOpacity: 0.25,
+                weight: 2,
+              }}
+            >
+              <Popup>
+                <div className="text-xs space-y-1">
+                  <p className="font-bold text-red-700">
+                    Route Hazard ({hz.severity}) · {hz.distanceM}m from route
+                  </p>
+                  <p className="text-slate-700">{hz.description}</p>
+                </div>
+              </Popup>
+            </Circle>
+          ))}
       </MapContainer>
 
       {/* Risk Legend */}
