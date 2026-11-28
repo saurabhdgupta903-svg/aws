@@ -37,13 +37,15 @@ type ActiveTab = "risk" | "report" | "route" | "precautions";
 
 export default function HomePage() {
   // ── Language (auto-detect from browser) ────────────────────────────────
-  const [lang, setLang] = useState<Lang>(() => {
-    if (typeof navigator === "undefined") return "mr";
-    const nav = navigator.language?.toLowerCase() ?? "";
-    if (nav.startsWith("hi")) return "hi";
-    if (nav.startsWith("mr") || nav.startsWith("ma")) return "mr";
-    return "en";
-  });
+  const [lang, setLang] = useState<Lang>("mr");
+  useEffect(() => {
+    void Promise.resolve().then(() => {
+      const nav = navigator.language?.toLowerCase() ?? "";
+      if (nav.startsWith("hi")) setLang("hi");
+      else if (nav.startsWith("mr") || nav.startsWith("ma")) setLang("mr");
+      else setLang("en");
+    });
+  }, []);
   const t = I18N[lang];
 
   // ── Tab & UI state ──────────────────────────────────────────────────────
@@ -113,7 +115,7 @@ export default function HomePage() {
   }, []);
 
   // ── Reports (DB API + 30s polling) ──────────────────────────────────────
-  const [reports, setReports] = useState<FloodReport[]>(() => loadOfflineReports());
+  const [reports, setReports] = useState<FloodReport[]>([]);
   const [reportsLoading, setReportsLoading] = useState(true);
   const [reportsError, setReportsError] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -132,6 +134,9 @@ export default function HomePage() {
 
   useEffect(() => {
     let active = true;
+    void Promise.resolve().then(() => {
+      if (active) setReports(loadOfflineReports());
+    });
     fetchSharedReports()
       .then((data) => {
         if (!active) return;
