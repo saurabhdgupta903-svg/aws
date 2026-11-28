@@ -90,6 +90,13 @@ export interface Translations {
   fireBrigade: string;
   dosByRisk: Record<RiskLevel, string[]>;
   dontsByRisk: Record<RiskLevel, string[]>;
+  getAlertsTitle: string;
+  getAlertsSubtitle: string;
+  alertEmailPlaceholder: string;
+  alertAreaAll: string;
+  alertSubscribeBtn: string;
+  alertSubscribing: string;
+  alertErrorGeneric: string;
 }
 
 export const I18N: Record<Lang, Translations> = {
@@ -221,6 +228,13 @@ export const I18N: Record<Lang, Translations> = {
         "ओल्या विजेच्या स्विच किंवा उपकरणांना हात लावू नका.",
       ],
     },
+    getAlertsTitle: "ईमेल अलर्ट मिळवा",
+    getAlertsSubtitle: "तीव्र पूर तक्रारींची सूचना थेट ईमेलवर मिळवा",
+    alertEmailPlaceholder: "तुमचा ईमेल (उदा. name@example.com)",
+    alertAreaAll: "संपूर्ण महाराष्ट्र",
+    alertSubscribeBtn: "सबस्क्राइब",
+    alertSubscribing: "पाठवत आहे...",
+    alertErrorGeneric: "सबस्क्राइब करताना त्रुटी आली. कृपया पुन्हा प्रयत्न करा.",
   },
   en: {
     appName: "FloodLoop AI",
@@ -350,6 +364,13 @@ export const I18N: Record<Lang, Translations> = {
         "Don't touch wet electrical switches or submerged appliances.",
       ],
     },
+    getAlertsTitle: "Get flood alerts",
+    getAlertsSubtitle: "Receive email alerts when high/severe floods are reported",
+    alertEmailPlaceholder: "you@example.com",
+    alertAreaAll: "All Maharashtra",
+    alertSubscribeBtn: "Subscribe",
+    alertSubscribing: "Sending...",
+    alertErrorGeneric: "Failed to subscribe. Please check your email and try again.",
   },
   hi: {
     appName: "FloodLoop AI",
@@ -479,6 +500,13 @@ export const I18N: Record<Lang, Translations> = {
         "गीले बिजली के स्विच या उपकरणों को न छुएं।",
       ],
     },
+    getAlertsTitle: "बाढ़ अलर्ट प्राप्त करें",
+    getAlertsSubtitle: "गंभीर बाढ़ रिपोर्ट की सूचना ईमेल पर पाएं",
+    alertEmailPlaceholder: "आपका ईमेल (जैसे name@example.com)",
+    alertAreaAll: "संपूर्ण महाराष्ट्र",
+    alertSubscribeBtn: "सदस्यता लें",
+    alertSubscribing: "भेजा जा रहा है...",
+    alertErrorGeneric: "सदस्यता लेने में त्रुटि हुई। कृपया पुनः प्रयास करें।",
   },
 };
 

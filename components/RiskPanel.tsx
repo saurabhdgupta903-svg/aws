@@ -19,7 +19,7 @@ import {
   type StateRiskSummary,
   type WeatherSnapshot,
 } from "@/lib/risk";
-import { REGIONS } from "@/lib/hotspots";
+import { MAHARASHTRA_CITIES, REGIONS } from "@/lib/hotspots";
 
 interface RiskPanelProps {
   stateSummary: StateRiskSummary;
@@ -57,7 +57,8 @@ export default function RiskPanel({
 }: RiskPanelProps) {
   const isSimulating = simulateRegion !== "off";
   const [alertEmail, setAlertEmail] = useState("");
-  const [alertStatus, setAlertStatus] = useState<string | null>(null);
+  const [alertDistrict, setAlertDistrict] = useState("");
+  const [alertStatus, setAlertStatus] = useState<{ ok: boolean; text: string } | null>(null);
   const [subscribing, setSubscribing] = useState(false);
 
   const handleSubscribe = async (e: React.FormEvent) => {
@@ -66,16 +67,23 @@ export default function RiskPanel({
     setSubscribing(true);
     setAlertStatus(null);
     try {
-      const res = await fetch("/api/subscribe", {
+      const res = await fetch("/api/alerts/subscribe", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: alertEmail.trim() }),
+        body: JSON.stringify({
+          email: alertEmail.trim(),
+          district: alertDistrict || undefined,
+        }),
       });
       const data = (await res.json()) as { message?: string; error?: string };
-      setAlertStatus(data.message || data.error || "Subscribed.");
-      if (res.ok) setAlertEmail("");
+      if (!res.ok) {
+        setAlertStatus({ ok: false, text: data.error || t.alertErrorGeneric });
+      } else {
+        setAlertStatus({ ok: true, text: data.message || "Subscribed." });
+        setAlertEmail("");
+      }
     } catch {
-      setAlertStatus("Failed to subscribe.");
+      setAlertStatus({ ok: false, text: t.alertErrorGeneric });
     } finally {
       setSubscribing(false);
     }
@@ -324,34 +332,60 @@ export default function RiskPanel({
         </div>
       </div>
 
-      {/* SNS Email Alerts Form */}
+      {/* Email Alerts Form */}
       <form
         onSubmit={handleSubscribe}
         className="rounded-2xl bg-slate-900/80 border border-cyan-500/25 p-4 space-y-2.5"
       >
         <div className="flex items-center gap-2">
           <Bell className="w-4 h-4 text-cyan-400" />
-          <h3 className="text-xs font-semibold text-white">Get alerts (Amazon SNS)</h3>
+          <div>
+            <h3 className="text-xs font-semibold text-white">{t.getAlertsTitle}</h3>
+            <p className="text-[11px] text-slate-400">{t.getAlertsSubtitle}</p>
+          </div>
         </div>
-        <div className="flex items-center gap-2">
-          <input
-            type="email"
-            required
-            value={alertEmail}
-            onChange={(e) => setAlertEmail(e.target.value)}
-            placeholder="you@example.com"
-            className="flex-1 rounded-xl bg-slate-800/90 border border-slate-700 focus:border-cyan-400 focus:outline-none px-3 py-2 text-xs text-white placeholder:text-slate-500"
-          />
-          <button
-            type="submit"
-            disabled={subscribing}
-            className="px-3.5 py-2 rounded-xl bg-cyan-500 hover:bg-cyan-400 disabled:bg-slate-700 text-slate-950 font-bold text-xs shrink-0 transition-colors"
+        <div className="space-y-2">
+          <select
+            aria-label="Alert area"
+            value={alertDistrict}
+            onChange={(e) => setAlertDistrict(e.target.value)}
+            className="w-full rounded-xl bg-slate-800/90 border border-slate-700 focus:border-cyan-400 focus:outline-none px-3 py-2 text-xs text-slate-200"
           >
-            {subscribing ? "..." : "Subscribe"}
-          </button>
+            <option value="">{t.alertAreaAll}</option>
+            {MAHARASHTRA_CITIES.map((c) => (
+              <option key={c.name} value={c.name}>
+                {c.name}
+              </option>
+            ))}
+          </select>
+          <div className="flex items-center gap-2">
+            <input
+              type="email"
+              required
+              value={alertEmail}
+              onChange={(e) => setAlertEmail(e.target.value)}
+              placeholder={t.alertEmailPlaceholder}
+              className="flex-1 min-w-0 rounded-xl bg-slate-800/90 border border-slate-700 focus:border-cyan-400 focus:outline-none px-3 py-2 text-xs text-white placeholder:text-slate-500"
+            />
+            <button
+              type="submit"
+              disabled={subscribing}
+              className="px-3.5 py-2 rounded-xl bg-cyan-500 hover:bg-cyan-400 disabled:bg-slate-700 text-slate-950 font-bold text-xs shrink-0 transition-colors"
+            >
+              {subscribing ? t.alertSubscribing : t.alertSubscribeBtn}
+            </button>
+          </div>
         </div>
         {alertStatus && (
-          <p className="text-[11px] text-cyan-200">{alertStatus}</p>
+          <p
+            className={`text-[11px] rounded-lg px-2.5 py-1.5 border ${
+              alertStatus.ok
+                ? "text-emerald-200 bg-emerald-950/40 border-emerald-500/30"
+                : "text-red-200 bg-red-950/40 border-red-500/30"
+            }`}
+          >
+            {alertStatus.text}
+          </p>
         )}
       </form>
     </div>

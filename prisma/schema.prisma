@@ -25,3 +25,19 @@ model Report {
   @@index([latitude, longitude])
   @@index([status, createdAt])
 }
+
+model Subscription {
+  id               String   @id @default(cuid())
+  email            String   @unique
+  district         String?
+  latitude         Float?
+  longitude        Float?
+  radiusKm         Float    @default(15)
+  verified         Boolean  @default(false)
+  confirmToken     String   @unique
+  unsubscribeToken String   @unique
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@index([verified])
+}

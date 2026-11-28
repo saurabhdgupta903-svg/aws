@@ -10,6 +10,7 @@ import {
   type CreateReportInput,
   type PublicReportDTO,
 } from "@/lib/reports-service";
+import { notifySubscribersForReport } from "@/lib/alerts-service";
 
 const MAX_REQUEST_BYTES = 64 * 1024; // 64KB
 const RATE_LIMIT_MAX = 15;
@@ -135,6 +136,11 @@ export async function POST(req: NextRequest) {
     });
 
     const reportDto = toPublicReport(created);
+    // Fire-and-forget async email alerts so POST /api/reports never slows down or fails
+    void notifySubscribersForReport(reportDto).catch((err) => {
+      console.error("[POST /api/reports] Async alert error:", err instanceof Error ? err.message : "unknown");
+    });
+
     const listResult = await listReports({ limit: 50, offset: 0 });
     const reports = await attachPresignedUrls(listResult.reports);
 
